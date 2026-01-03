@@ -109,6 +109,20 @@ async def test_list_transactions_date_range(client: AsyncClient, auth_headers: d
     assert len(response.json()) == 1
     assert response.json()[0]["amount"] == 10.0
     
-    # Filter by both
     response = await client.get("/transactions/?start_date=2023-01-01T00:00:00&end_date=2023-12-31T23:59:59", headers=auth_headers)
     assert len(response.json()) == 2
+
+@pytest.mark.asyncio
+async def test_update_transaction_not_found(client: AsyncClient, auth_headers: dict):
+    res = await client.patch("/transactions/non-existent", json={"amount": 10.0}, headers=auth_headers)
+    assert res.status_code == 404
+
+@pytest.mark.asyncio
+async def test_delete_transaction_not_found(client: AsyncClient, auth_headers: dict):
+    res = await client.delete("/transactions/non-existent", headers=auth_headers)
+    assert res.status_code == 404
+
+@pytest.mark.asyncio
+async def test_get_transaction_documents_not_found(client: AsyncClient, auth_headers: dict):
+    res = await client.get("/transactions/non-existent/documents", headers=auth_headers)
+    assert res.status_code == 404

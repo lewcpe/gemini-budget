@@ -46,7 +46,9 @@ async def confirm_proposal(
     
     if action.status == "APPROVED":
         # Data to use (either edited or original)
-        data = action.edited_data if action.edited_data else db_proposal.proposed_data
+        data = db_proposal.proposed_data.copy()
+        if action.edited_data:
+            data.update(action.edited_data)
         
         if db_proposal.change_type == "CREATE_NEW":
             new_tx = Transaction(

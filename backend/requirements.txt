@@ -13,3 +13,4 @@ greenlet
 google-genai
 pdf2image
 pillow
+pytest-cov

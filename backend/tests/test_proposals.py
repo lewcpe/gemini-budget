@@ -65,3 +65,99 @@ async def test_proposal_flow(client: AsyncClient, db_session, auth_headers: dict
     # 4. Verify transaction created
     tx_res = await client.get("/transactions/", headers=auth_headers)
     assert any(tx["amount"] == 100.0 for tx in tx_res.json())
+
+@pytest.mark.asyncio
+async def test_proposal_rejection(client: AsyncClient, db_session, auth_headers: dict, sample_account):
+    # Setup
+    res = await client.get("/accounts/", headers=auth_headers)
+    from backend.models import User, Document
+    user = (await db_session.execute(select(User).where(User.email == "test@example.com"))).scalars().first()
+    
+    doc = Document(user_id=user.id, original_filename="test.pdf", file_path="/tmp/test.pdf", mime_type="application/pdf")
+    db_session.add(doc)
+    await db_session.flush()
+    
+    proposal = ProposedChange(
+        user_id=user.id, document_id=doc.id, change_type="CREATE_NEW",
+        proposed_data={"account_id": sample_account, "amount": 50.0, "type": "EXPENSE", "transaction_date": "2026-01-01T10:00:00"},
+        status="PENDING"
+    )
+    db_session.add(proposal)
+    await db_session.commit()
+    
+    # Reject
+    res = await client.post(f"/proposals/{proposal.id}/confirm", json={"status": "REJECTED"}, headers=auth_headers)
+    assert res.status_code == 200
+    assert res.json()["status"] == "rejected"
+    
+    # Verify status in DB
+    await db_session.refresh(proposal)
+    assert proposal.status == "REJECTED"
+
+@pytest.mark.asyncio
+async def test_proposal_approve_with_edit(client: AsyncClient, db_session, auth_headers: dict, sample_account):
+    # Setup
+    await client.get("/accounts/", headers=auth_headers)
+    from backend.models import User, Document
+    user = (await db_session.execute(select(User).where(User.email == "test@example.com"))).scalars().first()
+    
+    doc = Document(user_id=user.id, original_filename="test.pdf", file_path="/tmp/test.pdf", mime_type="application/pdf")
+    db_session.add(doc)
+    await db_session.flush()
+    
+    proposal = ProposedChange(
+        user_id=user.id, document_id=doc.id, change_type="CREATE_NEW",
+        proposed_data={"account_id": sample_account, "amount": 10.0, "type": "EXPENSE", "transaction_date": "2026-01-01"},
+        status="PENDING"
+    )
+    db_session.add(proposal)
+    await db_session.commit()
+    
+    # Approve with edit
+    res = await client.post(
+        f"/proposals/{proposal.id}/confirm",
+        json={"status": "APPROVED", "edited_data": {"amount": 99.99, "account_id": sample_account}},
+        headers=auth_headers
+    )
+    assert res.status_code == 200
+    
+    # Verify transaction has EDITED amount
+    tx_res = await client.get("/transactions/", headers=auth_headers)
+    assert any(tx["amount"] == 99.99 for tx in tx_res.json())
+
+@pytest.mark.asyncio
+async def test_proposal_update_existing(client: AsyncClient, db_session, auth_headers: dict, sample_account, sample_category):
+    # Setup: Create a transaction first
+    await client.get("/accounts/", headers=auth_headers)
+    from backend.models import User, Document, Transaction
+    user = (await db_session.execute(select(User).where(User.email == "test@example.com"))).scalars().first()
+    
+    tx = Transaction(user_id=user.id, account_id=sample_account, category_id=sample_category, amount=10.0, type="EXPENSE", transaction_date=datetime.now())
+    db_session.add(tx)
+    await db_session.flush()
+    
+    doc = Document(user_id=user.id, original_filename="test.pdf", file_path="/tmp/test.pdf", mime_type="application/pdf")
+    db_session.add(doc)
+    await db_session.flush()
+    
+    proposal = ProposedChange(
+        user_id=user.id, document_id=doc.id, change_type="UPDATE_EXISTING",
+        target_transaction_id=tx.id,
+        proposed_data={"amount": 20.0},
+        status="PENDING"
+    )
+    db_session.add(proposal)
+    await db_session.commit()
+    
+    # Confirm
+    res = await client.post(f"/proposals/{proposal.id}/confirm", json={"status": "APPROVED"}, headers=auth_headers)
+    assert res.status_code == 200
+    
+    # Verify original TX updated
+    await db_session.refresh(tx)
+    assert tx.amount == 20.0
+
+@pytest.mark.asyncio
+async def test_proposal_not_found(client: AsyncClient, auth_headers: dict):
+    res = await client.post("/proposals/non-existent-id/confirm", json={"status": "APPROVED"}, headers=auth_headers)
+    assert res.status_code == 404

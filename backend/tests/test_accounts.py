@@ -80,3 +80,13 @@ async def test_delete_account(client: AsyncClient, auth_headers: dict):
     # Verify deleted
     list_res = await client.get("/accounts/", headers=auth_headers)
     assert all(a["id"] != acc_id for a in list_res.json())
+
+@pytest.mark.asyncio
+async def test_update_account_not_found(client: AsyncClient, auth_headers: dict):
+    res = await client.patch("/accounts/non-existent", json={"name": "Fail"}, headers=auth_headers)
+    assert res.status_code == 404
+
+@pytest.mark.asyncio
+async def test_delete_account_not_found(client: AsyncClient, auth_headers: dict):
+    res = await client.delete("/accounts/non-existent", headers=auth_headers)
+    assert res.status_code == 404

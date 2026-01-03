@@ -1,0 +1,17 @@
+[run]
+source = backend
+concurrency = greenlet
+omit =
+    backend/tests/*
+    backend/*/tests/*
+    backend/venv/*
+
+[report]
+show_missing = True
+exclude_lines =
+    pragma: no cover
+    def __repr__
+    if self.debug:
+    if __name__ == .__main__.:
+    raise NotImplementedError
+    if TYPE_CHECKING:

@@ -43,3 +43,8 @@ async def test_list_categories(client: AsyncClient, auth_headers: dict):
     response = await client.get("/categories/", headers=auth_headers)
     assert response.status_code == 200
     assert any(c["name"] == "Salary" for c in response.json())
+
+@pytest.mark.asyncio
+async def test_delete_category_not_found(client: AsyncClient, auth_headers: dict):
+    res = await client.delete("/categories/non-existent", headers=auth_headers)
+    assert res.status_code == 404
