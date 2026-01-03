@@ -169,18 +169,22 @@ async def test_proposal_create_account_and_transaction(client: AsyncClient, db_s
     await db_session.flush()
     
     proposal = ProposedChange(
-        user_id=user.id, document_id=doc.id, change_type="CREATE_ACCOUNT_AND_TRANSACTION",
+        user_id=user.id, document_id=doc.id, change_type="CREATE_ACCOUNT",
         proposed_data={
-            "amount": 150.0,
-            "merchant": "New Store",
-            "type": "EXPENSE",
-            "transaction_date": "2026-01-02",
             "_new_account": {
                 "name": "Bonus Card",
                 "type": "LIABILITY",
                 "sub_type": "CREDIT_CARD",
                 "description": "Acc No: 1234, Branch: Test"
-            }
+            },
+            "transactions": [
+                {
+                    "amount": 150.0,
+                    "merchant": "New Store",
+                    "type": "EXPENSE",
+                    "transaction_date": "2026-01-02"
+                }
+            ]
         },
         status="PENDING"
     )
@@ -204,6 +208,96 @@ async def test_proposal_create_account_and_transaction(client: AsyncClient, db_s
     assert tx is not None
     assert tx.amount == 150.0
     assert tx.merchant == "New Store"
+
+@pytest.mark.asyncio
+async def test_proposal_create_batch(client: AsyncClient, db_session, auth_headers: dict):
+    # Setup
+    await client.get("/accounts/", headers=auth_headers)
+    from backend.models import User, Document, Account, Transaction
+    user = (await db_session.execute(select(User).where(User.email == "test@example.com"))).scalars().first()
+    
+    doc = Document(user_id=user.id, original_filename="batch.pdf", file_path="/tmp/batch.pdf", mime_type="application/pdf")
+    db_session.add(doc)
+    await db_session.flush()
+    
+    proposal = ProposedChange(
+        user_id=user.id, document_id=doc.id, change_type="CREATE_ACCOUNT",
+        proposed_data={
+            "_new_account": {
+                "name": "Batch Savings",
+                "type": "ASSET",
+                "sub_type": "CASH",
+                "description": "Batch creation test"
+            },
+            "transactions": [
+                {"amount": 100.0, "merchant": "Shop A", "type": "EXPENSE", "transaction_date": "2026-01-01"},
+                {"amount": 200.0, "merchant": "Shop B", "type": "EXPENSE", "transaction_date": "2026-01-02"}
+            ]
+        },
+        status="PENDING"
+    )
+    db_session.add(proposal)
+    await db_session.commit()
+    
+    # Confirm
+    res = await client.post(f"/proposals/{proposal.id}/confirm", json={"status": "APPROVED"}, headers=auth_headers)
+    assert res.status_code == 200
+    
+    # Verify account created
+    acc_res = await db_session.execute(select(Account).where(Account.name == "Batch Savings"))
+    account = acc_res.scalars().first()
+    assert account is not None
+    
+    # Verify transactions created
+    tx_res = await db_session.execute(select(Transaction).where(Transaction.account_id == account.id))
+    transactions = tx_res.scalars().all()
+    assert len(transactions) == 2
+    assert any(t.amount == 100.0 for t in transactions)
+    assert any(t.amount == 200.0 for t in transactions)
+
+@pytest.mark.asyncio
+async def test_proposal_create_account_override(client: AsyncClient, db_session, auth_headers: dict, sample_account):
+    # Setup
+    await client.get("/accounts/", headers=auth_headers)
+    from backend.models import User, Document, Account, Transaction
+    user = (await db_session.execute(select(User).where(User.email == "test@example.com"))).scalars().first()
+    
+    doc = Document(user_id=user.id, original_filename="override.pdf", file_path="/tmp/override.pdf", mime_type="application/pdf")
+    db_session.add(doc)
+    await db_session.flush()
+    
+    proposal = ProposedChange(
+        user_id=user.id, document_id=doc.id, change_type="CREATE_ACCOUNT",
+        proposed_data={
+            "_new_account": {"name": "Should not be created"},
+            "transactions": [
+                {"amount": 500.0, "merchant": "Big Purchase", "type": "EXPENSE", "transaction_date": "2026-01-05"}
+            ]
+        },
+        status="PENDING"
+    )
+    db_session.add(proposal)
+    await db_session.commit()
+    
+    # Confirm with OVERRIDE account_id
+    res = await client.post(
+        f"/proposals/{proposal.id}/confirm", 
+        json={
+            "status": "APPROVED",
+            "edited_data": {"account_id": sample_account}
+        }, 
+        headers=auth_headers
+    )
+    assert res.status_code == 200
+    
+    # Verify NO new account was created with that name
+    acc_res = await db_session.execute(select(Account).where(Account.name == "Should not be created"))
+    assert acc_res.scalars().first() is None
+    
+    # Verify transaction linked to sample_account
+    tx_res = await db_session.execute(select(Transaction).where(Transaction.account_id == sample_account))
+    txs = tx_res.scalars().all()
+    assert any(t.amount == 500.0 for t in txs)
 
 @pytest.mark.asyncio
 async def test_proposal_not_found(client: AsyncClient, auth_headers: dict):

@@ -30,7 +30,7 @@ class ProposalStatus(str, Enum):
 class ProposalChangeType(str, Enum):
     CREATE_NEW = "CREATE_NEW"
     UPDATE_EXISTING = "UPDATE_EXISTING"
-    CREATE_ACCOUNT_AND_TRANSACTION = "CREATE_ACCOUNT_AND_TRANSACTION"
+    CREATE_ACCOUNT = "CREATE_ACCOUNT"
 
 # --- User ---
 class UserBase(BaseModel):

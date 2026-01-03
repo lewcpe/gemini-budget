@@ -1,6 +1,7 @@
 import pytest
 from unittest.mock import MagicMock, patch, AsyncMock
 from pathlib import Path
+import json
 from backend.services.document_processor import process_document_task
 from backend.models import Document, User, ProposedChange
 from sqlalchemy import select
@@ -50,7 +51,16 @@ async def test_process_document_task_pdf(db_session, auth_headers):
         mock_res_extraction.text = mock_gemini_json
         
         mock_res_agent = MagicMock()
-        mock_res_agent.text = '{"action": "DECIDE", "decision": "CREATE_NEW", "confidence": 0.9}'
+        mock_res_agent.text = json.dumps({
+            "action": "DECIDE",
+            "proposals": [
+                {
+                    "type": "CREATE_NEW",
+                    "data": {"amount": 100.0, "merchant": "Test Shop", "transaction_date": "2026-01-01", "type": "EXPENSE"},
+                    "confidence": 0.9
+                }
+            ]
+        })
         
         mock_client.aio.models.generate_content = AsyncMock(side_effect=[mock_res_extraction, mock_res_agent])
         
@@ -118,3 +128,58 @@ async def test_process_document_task_gemini_error(db_session):
         
         await db_session.refresh(doc)
         assert doc.status == "ERROR"
+
+@pytest.mark.asyncio
+async def test_process_document_task_batch(db_session, auth_headers):
+    # Setup
+    user = User(email="batch@example.com", full_name="Batch User")
+    db_session.add(user)
+    await db_session.flush()
+    
+    doc = Document(user_id=user.id, original_filename="batch.jpg", file_path="/tmp/batch.jpg", mime_type="image/jpeg")
+    db_session.add(doc)
+    await db_session.commit()
+
+    with patch("backend.services.document_processor.PIL.Image.open", return_value=MagicMock()), \
+         patch("backend.services.document_processor.genai.Client") as mock_genai_client_class, \
+         patch("backend.services.document_processor.SessionLocal") as mock_session_local:
+        
+        mock_session_local.return_value.__aenter__.return_value = db_session
+        mock_client = MagicMock()
+        mock_genai_client_class.return_value = mock_client
+        
+        # 1st call: Extraction (2 items)
+        mock_res_extraction = MagicMock()
+        mock_res_extraction.text = json.dumps([
+            {"amount": 10.0, "merchant": "A"},
+            {"amount": 20.0, "merchant": "B"}
+        ])
+        
+        # 2nd call: Agentic Decision (1 account proposal)
+        mock_res_agent = MagicMock()
+        mock_res_agent.text = json.dumps({
+            "action": "DECIDE",
+            "proposals": [
+                {
+                    "type": "CREATE_ACCOUNT",
+                    "new_account_data": {"name": "Batch Card", "type": "LIABILITY"},
+                    "transactions": [
+                        {"amount": 10.0, "merchant": "A", "transaction_date": "2026-01-01", "type": "EXPENSE"},
+                        {"amount": 20.0, "merchant": "B", "transaction_date": "2026-01-01", "type": "EXPENSE"}
+                    ],
+                    "confidence": 0.95
+                }
+            ]
+        })
+        
+        mock_client.aio.models.generate_content = AsyncMock(side_effect=[mock_res_extraction, mock_res_agent])
+        
+        await process_document_task(doc.id)
+        
+        # Verify proposal
+        res = await db_session.execute(select(ProposedChange).where(ProposedChange.document_id == doc.id))
+        proposals = res.scalars().all()
+        assert len(proposals) == 1
+        assert proposals[0].change_type == "CREATE_ACCOUNT"
+        assert len(proposals[0].proposed_data["transactions"]) == 2
+        assert proposals[0].proposed_data["_new_account"]["name"] == "Batch Card"

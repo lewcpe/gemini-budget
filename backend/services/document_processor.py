@@ -104,9 +104,8 @@ async def process_document_task(document_id: str):
             if not isinstance(extracted_data, list):
                 extracted_data = [extracted_data]
 
-            # 3. Match and Propose
-            for item in extracted_data:
-                await create_or_update_proposal(item, doc, db)
+            # 3. Match and Propose (Batch)
+            await create_proposals_for_extracted_data(extracted_data, doc, db)
 
             doc.status = "PROCESSED"
             await db.commit()
@@ -116,17 +115,14 @@ async def process_document_task(document_id: str):
             doc.status = "ERROR"
             await db.commit()
 
-async def create_or_update_proposal(data: dict, doc: Document, db: AsyncSession):
+async def create_proposals_for_extracted_data(extracted_data: list, doc: Document, db: AsyncSession):
     """
-    Agentic loop to match a transaction:
-    1. Gather context (last 5 transactions, accounts).
-    2. Prompt Gemini to decide: MATCH, NEW, or QUERY.
-    3. Loop up to GENAI_LIMIT_QUERY if Gemini needs more info.
+    Agentic loop to process all transactions from a document at once.
+    Allows for batching (e.g., New Account + Multiple Transactions).
     """
     client = genai.Client(api_key=settings.GOOGLE_GENAI_KEY)
     user_id = doc.user_id
     
-    # 1. Gather initial context
     context = await get_agent_context(db, user_id)
     
     query_count = 0
@@ -135,32 +131,46 @@ async def create_or_update_proposal(data: dict, doc: Document, db: AsyncSession)
 
     while query_count < limit:
         prompt = f"""
-        You are an intelligent accounting assistant. Your goal is to decide whether the following parsed transaction
-        matches an existing transaction in the database or should be created as a new one.
+        You are an intelligent accounting assistant. Your goal is to process the following extracted transactions
+        and decide whether they match existing ones, should be created individually, or part of a batch.
 
-        Parsed Transaction:
-        {json.dumps(data, indent=2)}
+        Extracted Transactions:
+        {json.dumps(extracted_data, indent=2)}
 
-        User Context (Last 5 transactions and accounts):
+        User Context (Recent transactions and existing accounts):
         {json.dumps(context, indent=2)}
 
-        History of your queries and results in this session:
+        History of your queries and results:
         {json.dumps(history, indent=2)}
 
         Available Actions:
-        1. QUERY: If you need more information, you can query transactions. 
-           Available filters: merchant (string), amount (number), start_date (YYYY-MM-DD), end_date (YYYY-MM-DD).
+        1. QUERY: If you need more information about a specific transaction or merchant.
            Example: {{"action": "QUERY", "params": {{"merchant": "Amazon", "amount": 25.00}}}}
-        2. DECIDE: If you have enough information, make a decision.
-           Options: 
+        2. DECIDE: Make a final proposal for the document. You can return multiple proposals.
+           Decision Options for each item: 
            - "CREATE_NEW": No matching transaction found.
-           - "UPDATE_EXISTING": Found a matching transaction that should be updated. Provide the `target_transaction_id`.
-           - "CREATE_ACCOUNT_AND_TRANSACTION": If the transaction belongs to an account that doesn't exist yet (e.g., a new credit card or bank account mentioned in the receipt). Provide `new_account_data` (name, type: ASSET/LIABILITY, sub_type: CASH/CREDIT_CARD/etc., description: string including account number, branch, and other key info).
-           Example: {{"action": "DECIDE", "decision": "UPDATE_EXISTING", "target_transaction_id": "uuid-here", "confidence": 0.95}}
-           Example: {{"action": "DECIDE", "decision": "CREATE_NEW", "confidence": 0.8}}
-           Example: {{"action": "DECIDE", "decision": "CREATE_ACCOUNT_AND_TRANSACTION", "new_account_data": {{"name": "Chase Freedom", "type": "LIABILITY", "sub_type": "CREDIT_CARD", "description": "Acc No: ...-1234, Branch: Downtown"}}, "confidence": 0.9}}
+           - "UPDATE_EXISTING": Match found. Provide `target_transaction_id`.
+           - "CREATE_ACCOUNT": If one or more transactions belong to a NEW account. Provide `new_account_data` and the list of `transactions`.
 
-        Return ONLY a JSON object with "action" and relevant fields.
+           Return format for DECIDE:
+           {{
+             "action": "DECIDE",
+             "proposals": [
+               {{
+                 "type": "CREATE_NEW",
+                 "data": {{...}},
+                 "confidence": 0.9
+               }},
+               {{
+                 "type": "CREATE_ACCOUNT",
+                 "new_account_data": {{"name": "...", "type": "...", "sub_type": "...", "description": "..."}},
+                 "transactions": [{{...}}, {{...}}],
+                 "confidence": 0.95
+               }}
+             ]
+           }}
+
+        Return ONLY a JSON object.
         """
 
         response = await client.aio.models.generate_content(
@@ -172,14 +182,11 @@ async def create_or_update_proposal(data: dict, doc: Document, db: AsyncSession)
         )
 
         if not response.text:
-            print(f"Gemini agent returned no text for document {doc.id}")
             break
 
         try:
             res = json.loads(response.text)
         except json.JSONDecodeError:
-            # Fallback to simple matching if Gemini fails
-            print(f"Gemini agent failed to return valid JSON: {response.text}")
             break
 
         if res.get("action") == "QUERY":
@@ -192,24 +199,33 @@ async def create_or_update_proposal(data: dict, doc: Document, db: AsyncSession)
             })
             continue
         elif res.get("action") == "DECIDE":
-            decision = res.get("decision")
-            target_id = res.get("target_transaction_id")
-            confidence = res.get("confidence", 0.9)
-            
-            if decision == "UPDATE_EXISTING":
-                await apply_proposal(data, doc, db, "UPDATE_EXISTING", target_id, confidence)
-            elif decision == "CREATE_ACCOUNT_AND_TRANSACTION":
-                # Include new account data in the proposal data
-                proposal_data = data.copy()
-                proposal_data["_new_account"] = res.get("new_account_data")
-                await apply_proposal(proposal_data, doc, db, "CREATE_ACCOUNT_AND_TRANSACTION", None, confidence)
-            else:
-                await apply_proposal(data, doc, db, "CREATE_NEW", None, confidence)
+            proposals = res.get("proposals", [])
+            for p in proposals:
+                p_type = p.get("type")
+                p_data = p.get("data")
+                p_confidence = p.get("confidence", 0.7)
+                
+                if p_type == "CREATE_ACCOUNT":
+                    batch_data = {
+                        "_new_account": p.get("new_account_data"),
+                        "transactions": p.get("transactions")
+                    }
+                    await apply_proposal(batch_data, doc, db, "CREATE_ACCOUNT", None, p_confidence)
+                elif p_type == "UPDATE_EXISTING":
+                    await apply_proposal(p_data, doc, db, "UPDATE_EXISTING", p.get("target_transaction_id"), p_confidence)
+                else:
+                    await apply_proposal(p_data, doc, db, "CREATE_NEW", None, p_confidence)
             return
         else:
             break
 
-    # Final fallback: use simple logic if limit reached or agent fails
+    # Fallback if AI fails: process each item with fallback logic
+    for item in extracted_data:
+        await fallback_matching_logic(item, doc, db)
+
+async def create_or_update_proposal(data: dict, doc: Document, db: AsyncSession):
+    # This is now kept for backward compatibility or individual fallbacks, 
+    # but the logic is mostly moved to create_proposals_for_extracted_data.
     await fallback_matching_logic(data, doc, db)
 
 async def get_agent_context(db: AsyncSession, user_id: str):
