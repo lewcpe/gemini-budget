@@ -1,5 +1,6 @@
 import pytest
 import asyncio
+from unittest.mock import patch
 from typing import AsyncGenerator
 from httpx import AsyncClient, ASGITransport
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
@@ -65,6 +66,12 @@ async def client(db_session) -> AsyncGenerator[AsyncClient, None]:
 @pytest.fixture
 def auth_headers():
     return {settings.AUTH_EMAIL_HEADER: "test@example.com"}
+
+@pytest.fixture(autouse=True)
+def mock_document_processing():
+    """Mock the document processing background task by default for all tests."""
+    with patch("backend.routers.documents.process_document_task") as mock:
+        yield mock
 
 @pytest.fixture
 def auth_headers_other():

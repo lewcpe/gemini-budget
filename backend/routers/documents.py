@@ -1,6 +1,6 @@
 import shutil
 import uuid
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, status
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, status, BackgroundTasks
 from sqlalchemy.future import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from typing import List, Optional
@@ -9,6 +9,7 @@ from ..models import Document, User
 from ..schemas import Document as DocumentSchema
 from ..dependencies import get_current_user, PaginationParams
 from ..config import settings
+from ..services.document_processor import process_document_task
 
 router = APIRouter(prefix="/documents", tags=["documents"])
 
@@ -17,7 +18,8 @@ async def upload_document(
     file: UploadFile = File(...),
     user_note: Optional[str] = Form(None),
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(get_current_user),
+    background_tasks: BackgroundTasks = BackgroundTasks()
 ):
     file_id = str(uuid.uuid4())
     filename = file.filename or ""
@@ -41,6 +43,9 @@ async def upload_document(
     db.add(db_document)
     await db.commit()
     await db.refresh(db_document)
+    
+    background_tasks.add_task(process_document_task, db_document.id)
+        
     return db_document
 
 @router.get("/", response_model=List[DocumentSchema])
