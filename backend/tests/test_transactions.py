@@ -1,6 +1,6 @@
 import pytest
 from httpx import AsyncClient
-from datetime import datetime
+from datetime import datetime, timezone
 
 @pytest.mark.asyncio
 async def test_create_transaction(client: AsyncClient, auth_headers: dict, sample_account, sample_category):
@@ -9,7 +9,7 @@ async def test_create_transaction(client: AsyncClient, auth_headers: dict, sampl
         "category_id": sample_category,
         "amount": 50.0,
         "type": "EXPENSE",
-        "transaction_date": datetime.utcnow().isoformat(),
+        "transaction_date": datetime.now(timezone.utc).isoformat(),
         "merchant": "Supermarket"
     }
     response = await client.post("/transactions/", json=tx_data, headers=auth_headers)
@@ -25,7 +25,7 @@ async def test_list_transactions(client: AsyncClient, auth_headers: dict, sample
             "account_id": sample_account,
             "amount": 20.0,
             "type": "EXPENSE",
-            "transaction_date": datetime.utcnow().isoformat()
+            "transaction_date": datetime.now(timezone.utc).isoformat()
         },
         headers=auth_headers
     )

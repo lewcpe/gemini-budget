@@ -1,5 +1,5 @@
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import List, Optional
 from sqlalchemy import String, ForeignKey, DateTime, Text, JSON, Float, Table, Column
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -15,7 +15,7 @@ transaction_document = Table(
     Base.metadata,
     Column("transaction_id", String, ForeignKey("transaction.id"), primary_key=True),
     Column("document_id", String, ForeignKey("document.id"), primary_key=True),
-    Column("attached_at", DateTime, default=datetime.utcnow),
+    Column("attached_at", DateTime, default=lambda: datetime.now(timezone.utc)),
 )
 
 class User(Base):
@@ -24,7 +24,7 @@ class User(Base):
     id: Mapped[str] = mapped_column(String, primary_key=True, default=gen_uuid)
     email: Mapped[str] = mapped_column(String, unique=True, index=True)
     full_name: Mapped[Optional[str]] = mapped_column(String)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
     
     accounts: Mapped[List["Account"]] = relationship(back_populates="user")
     categories: Mapped[List["Category"]] = relationship(back_populates="user")
@@ -42,7 +42,7 @@ class Account(Base):
     sub_type: Mapped[Optional[str]] = mapped_column(String)  # CASH, CREDIT_CARD, etc.
     current_balance: Mapped[float] = mapped_column(Float, default=0.0)
     currency: Mapped[str] = mapped_column(String, default="USD")
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
     
     user: Mapped["User"] = relationship(back_populates="accounts")
     transactions: Mapped[List["Transaction"]] = relationship(
@@ -79,8 +79,8 @@ class Transaction(Base):
     note: Mapped[Optional[str]] = mapped_column(Text)
     merchant: Mapped[Optional[str]] = mapped_column(String)
     
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
     
     user: Mapped["User"] = relationship(back_populates="transactions")
     account: Mapped["Account"] = relationship(foreign_keys=[account_id], back_populates="transactions")
@@ -101,7 +101,7 @@ class Document(Base):
     mime_type: Mapped[str] = mapped_column(String)
     user_note: Mapped[Optional[str]] = mapped_column(Text)
     status: Mapped[str] = mapped_column(String, default="UPLOADED") # UPLOADED, PARSING, PROCESSED, ERROR
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
     
     user: Mapped["User"] = relationship(back_populates="documents")
     proposals: Mapped[List["ProposedChange"]] = relationship(back_populates="document")
@@ -123,7 +123,7 @@ class ProposedChange(Base):
     proposed_data: Mapped[dict] = mapped_column(SQLiteJSON)
     confidence_score: Mapped[Optional[float]] = mapped_column(Float)
     
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
     
     user: Mapped["User"] = relationship(back_populates="proposals")
     document: Mapped["Document"] = relationship(back_populates="proposals")
