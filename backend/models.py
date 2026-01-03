@@ -42,6 +42,7 @@ class Account(Base):
     sub_type: Mapped[Optional[str]] = mapped_column(String)  # CASH, CREDIT_CARD, etc.
     current_balance: Mapped[float] = mapped_column(Float, default=0.0)
     currency: Mapped[str] = mapped_column(String, default="USD")
+    description: Mapped[Optional[str]] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
     
     user: Mapped["User"] = relationship(back_populates="accounts")

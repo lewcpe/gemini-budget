@@ -30,6 +30,7 @@ class ProposalStatus(str, Enum):
 class ProposalChangeType(str, Enum):
     CREATE_NEW = "CREATE_NEW"
     UPDATE_EXISTING = "UPDATE_EXISTING"
+    CREATE_ACCOUNT_AND_TRANSACTION = "CREATE_ACCOUNT_AND_TRANSACTION"
 
 # --- User ---
 class UserBase(BaseModel):
@@ -50,6 +51,7 @@ class AccountBase(BaseModel):
     type: AccountType
     sub_type: Optional[str] = None
     currency: str = "USD"
+    description: Optional[str] = None
 
 class AccountCreate(AccountBase):
     current_balance: float = 0.0
@@ -60,6 +62,7 @@ class AccountUpdate(BaseModel):
     sub_type: Optional[str] = None
     current_balance: Optional[float] = None
     currency: Optional[str] = None
+    description: Optional[str] = None
 
 class Account(AccountBase):
     id: str

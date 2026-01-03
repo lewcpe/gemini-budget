@@ -158,6 +158,54 @@ async def test_proposal_update_existing(client: AsyncClient, db_session, auth_he
     assert tx.amount == 20.0
 
 @pytest.mark.asyncio
+async def test_proposal_create_account_and_transaction(client: AsyncClient, db_session, auth_headers: dict):
+    # Setup
+    await client.get("/accounts/", headers=auth_headers)
+    from backend.models import User, Document, Account, Transaction
+    user = (await db_session.execute(select(User).where(User.email == "test@example.com"))).scalars().first()
+    
+    doc = Document(user_id=user.id, original_filename="test.pdf", file_path="/tmp/test.pdf", mime_type="application/pdf")
+    db_session.add(doc)
+    await db_session.flush()
+    
+    proposal = ProposedChange(
+        user_id=user.id, document_id=doc.id, change_type="CREATE_ACCOUNT_AND_TRANSACTION",
+        proposed_data={
+            "amount": 150.0,
+            "merchant": "New Store",
+            "type": "EXPENSE",
+            "transaction_date": "2026-01-02",
+            "_new_account": {
+                "name": "Bonus Card",
+                "type": "LIABILITY",
+                "sub_type": "CREDIT_CARD",
+                "description": "Acc No: 1234, Branch: Test"
+            }
+        },
+        status="PENDING"
+    )
+    db_session.add(proposal)
+    await db_session.commit()
+    
+    # Confirm
+    res = await client.post(f"/proposals/{proposal.id}/confirm", json={"status": "APPROVED"}, headers=auth_headers)
+    assert res.status_code == 200
+    
+    # Verify account created
+    acc_res = await db_session.execute(select(Account).where(Account.name == "Bonus Card"))
+    account = acc_res.scalars().first()
+    assert account is not None
+    assert account.type == "LIABILITY"
+    assert account.description == "Acc No: 1234, Branch: Test"
+    
+    # Verify transaction created for that account
+    tx_res = await db_session.execute(select(Transaction).where(Transaction.account_id == account.id))
+    tx = tx_res.scalars().first()
+    assert tx is not None
+    assert tx.amount == 150.0
+    assert tx.merchant == "New Store"
+
+@pytest.mark.asyncio
 async def test_proposal_not_found(client: AsyncClient, auth_headers: dict):
     res = await client.post("/proposals/non-existent-id/confirm", json={"status": "APPROVED"}, headers=auth_headers)
     assert res.status_code == 404

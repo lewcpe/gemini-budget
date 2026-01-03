@@ -78,6 +78,52 @@ async def confirm_proposal(
                 
             db.add(new_tx)
         
+        elif db_proposal.change_type == "CREATE_ACCOUNT_AND_TRANSACTION":
+            # 1. Create Account
+            acc_data = data.get("_new_account")
+            if not acc_data:
+                raise HTTPException(status_code=400, detail="Missing new account data")
+            
+            new_acc = Account(
+                user_id=current_user.id,
+                name=acc_data.get("name"),
+                type=acc_data.get("type", "ASSET"),
+                sub_type=acc_data.get("sub_type"),
+                currency=acc_data.get("currency", "USD"),
+                description=acc_data.get("description")
+            )
+            db.add(new_acc)
+            await db.flush() # To get the id
+            
+            # 2. Create Transaction
+            new_tx = Transaction(
+                user_id=current_user.id,
+                account_id=new_acc.id,
+                target_account_id=data.get("target_account_id"),
+                category_id=data.get("category_id"),
+                amount=data.get("amount"),
+                type=data.get("type"),
+                transaction_date=(
+                    datetime.fromisoformat(data["transaction_date"])
+                    if isinstance(data.get("transaction_date"), str)
+                    else (data.get("transaction_date") or datetime.now(timezone.utc))
+                ),
+                note=data.get("note"),
+                merchant=data.get("merchant")
+            )
+            
+            # Link to document
+            doc_result = await db.execute(
+                select(Document)
+                .join(ProposedChange, ProposedChange.document_id == Document.id)
+                .where(ProposedChange.id == proposal_id)
+            )
+            doc = doc_result.scalars().first()
+            if doc:
+                new_tx.documents.append(doc)
+            
+            db.add(new_tx)
+
         elif db_proposal.change_type == "UPDATE_EXISTING":
             if not db_proposal.target_transaction_id:
                 raise HTTPException(status_code=400, detail="Missing target transaction for update")

@@ -78,7 +78,7 @@ async def process_document_task(document_id: str):
             for img in images:
                 contents.append(img)
 
-            response = client.models.generate_content(
+            response = await client.aio.models.generate_content(
                 model=settings.GOOGLE_GENAI_MODEL,
                 contents=contents,
                 config=types.GenerateContentConfig(
@@ -155,13 +155,15 @@ async def create_or_update_proposal(data: dict, doc: Document, db: AsyncSession)
            Options: 
            - "CREATE_NEW": No matching transaction found.
            - "UPDATE_EXISTING": Found a matching transaction that should be updated. Provide the `target_transaction_id`.
+           - "CREATE_ACCOUNT_AND_TRANSACTION": If the transaction belongs to an account that doesn't exist yet (e.g., a new credit card or bank account mentioned in the receipt). Provide `new_account_data` (name, type: ASSET/LIABILITY, sub_type: CASH/CREDIT_CARD/etc., description: string including account number, branch, and other key info).
            Example: {{"action": "DECIDE", "decision": "UPDATE_EXISTING", "target_transaction_id": "uuid-here", "confidence": 0.95}}
            Example: {{"action": "DECIDE", "decision": "CREATE_NEW", "confidence": 0.8}}
+           Example: {{"action": "DECIDE", "decision": "CREATE_ACCOUNT_AND_TRANSACTION", "new_account_data": {{"name": "Chase Freedom", "type": "LIABILITY", "sub_type": "CREDIT_CARD", "description": "Acc No: ...-1234, Branch: Downtown"}}, "confidence": 0.9}}
 
         Return ONLY a JSON object with "action" and relevant fields.
         """
 
-        response = client.models.generate_content(
+        response = await client.aio.models.generate_content(
             model=settings.GOOGLE_GENAI_MODEL,
             contents=[prompt],
             config=types.GenerateContentConfig(
@@ -196,6 +198,11 @@ async def create_or_update_proposal(data: dict, doc: Document, db: AsyncSession)
             
             if decision == "UPDATE_EXISTING":
                 await apply_proposal(data, doc, db, "UPDATE_EXISTING", target_id, confidence)
+            elif decision == "CREATE_ACCOUNT_AND_TRANSACTION":
+                # Include new account data in the proposal data
+                proposal_data = data.copy()
+                proposal_data["_new_account"] = res.get("new_account_data")
+                await apply_proposal(proposal_data, doc, db, "CREATE_ACCOUNT_AND_TRANSACTION", None, confidence)
             else:
                 await apply_proposal(data, doc, db, "CREATE_NEW", None, confidence)
             return

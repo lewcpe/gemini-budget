@@ -52,14 +52,14 @@ async def test_process_document_task_pdf(db_session, auth_headers):
         mock_res_agent = MagicMock()
         mock_res_agent.text = '{"action": "DECIDE", "decision": "CREATE_NEW", "confidence": 0.9}'
         
-        mock_client.models.generate_content.side_effect = [mock_res_extraction, mock_res_agent]
+        mock_client.aio.models.generate_content = AsyncMock(side_effect=[mock_res_extraction, mock_res_agent])
         
         # 3. Run the task
         await process_document_task(doc.id)
         
         # 4. Verifications
         assert mock_pdf_conv.called
-        assert mock_client.models.generate_content.called
+        assert mock_client.aio.models.generate_content.called
         
         # Verify status updated
         await db_session.refresh(doc)
@@ -112,7 +112,7 @@ async def test_process_document_task_gemini_error(db_session):
          patch("backend.services.document_processor.SessionLocal") as mock_session_local:
         
         mock_session_local.return_value.__aenter__.return_value = db_session
-        mock_genai.return_value.models.generate_content.side_effect = Exception("Gemini Down")
+        mock_genai.return_value.aio.models.generate_content = AsyncMock(side_effect=Exception("Gemini Down"))
         
         await process_document_task(doc.id)
         
