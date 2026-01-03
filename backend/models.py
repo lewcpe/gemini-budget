@@ -26,17 +26,17 @@ class User(Base):
     full_name: Mapped[Optional[str]] = mapped_column(String)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
     
-    accounts: Mapped[List["Account"]] = relationship(back_populates="user")
-    categories: Mapped[List["Category"]] = relationship(back_populates="user")
-    transactions: Mapped[List["Transaction"]] = relationship(back_populates="user")
-    documents: Mapped[List["Document"]] = relationship(back_populates="user")
-    proposals: Mapped[List["ProposedChange"]] = relationship(back_populates="user")
+    accounts: Mapped[List["Account"]] = relationship(back_populates="user", cascade="all, delete-orphan")
+    categories: Mapped[List["Category"]] = relationship(back_populates="user", cascade="all, delete-orphan")
+    transactions: Mapped[List["Transaction"]] = relationship(back_populates="user", cascade="all, delete-orphan")
+    documents: Mapped[List["Document"]] = relationship(back_populates="user", cascade="all, delete-orphan")
+    proposals: Mapped[List["ProposedChange"]] = relationship(back_populates="user", cascade="all, delete-orphan")
 
 class Account(Base):
     __tablename__ = "account"
     
     id: Mapped[str] = mapped_column(String, primary_key=True, default=gen_uuid)
-    user_id: Mapped[str] = mapped_column(String, ForeignKey("user.id"))
+    user_id: Mapped[str] = mapped_column(String, ForeignKey("user.id", ondelete="CASCADE"))
     name: Mapped[str] = mapped_column(String)
     type: Mapped[str] = mapped_column(String)  # ASSET, LIABILITY
     sub_type: Mapped[Optional[str]] = mapped_column(String)  # CASH, CREDIT_CARD, etc.
@@ -48,20 +48,21 @@ class Account(Base):
     user: Mapped["User"] = relationship(back_populates="accounts")
     transactions: Mapped[List["Transaction"]] = relationship(
         back_populates="account", 
-        foreign_keys="[Transaction.account_id]"
+        foreign_keys="[Transaction.account_id]",
+        cascade="all, delete-orphan"
     )
 
 class Category(Base):
     __tablename__ = "category"
     
     id: Mapped[str] = mapped_column(String, primary_key=True, default=gen_uuid)
-    user_id: Mapped[str] = mapped_column(String, ForeignKey("user.id"))
+    user_id: Mapped[str] = mapped_column(String, ForeignKey("user.id", ondelete="CASCADE"))
     name: Mapped[str] = mapped_column(String)
     type: Mapped[str] = mapped_column(String)  # INCOME, EXPENSE
-    parent_category_id: Mapped[Optional[str]] = mapped_column(String, ForeignKey("category.id"))
+    parent_category_id: Mapped[Optional[str]] = mapped_column(String, ForeignKey("category.id", ondelete="CASCADE"))
     
     user: Mapped["User"] = relationship(back_populates="categories")
-    children: Mapped[List["Category"]] = relationship("Category", back_populates="parent")
+    children: Mapped[List["Category"]] = relationship("Category", back_populates="parent", cascade="all, delete-orphan")
     parent: Mapped[Optional["Category"]] = relationship("Category", back_populates="children", remote_side=[id])
     transactions: Mapped[List["Transaction"]] = relationship(back_populates="category")
 
@@ -69,10 +70,10 @@ class Transaction(Base):
     __tablename__ = "transaction"
     
     id: Mapped[str] = mapped_column(String, primary_key=True, default=gen_uuid)
-    user_id: Mapped[str] = mapped_column(String, ForeignKey("user.id"))
-    account_id: Mapped[str] = mapped_column(String, ForeignKey("account.id"))
-    target_account_id: Mapped[Optional[str]] = mapped_column(String, ForeignKey("account.id"))
-    category_id: Mapped[Optional[str]] = mapped_column(String, ForeignKey("category.id"))
+    user_id: Mapped[str] = mapped_column(String, ForeignKey("user.id", ondelete="CASCADE"))
+    account_id: Mapped[str] = mapped_column(String, ForeignKey("account.id", ondelete="CASCADE"))
+    target_account_id: Mapped[Optional[str]] = mapped_column(String, ForeignKey("account.id", ondelete="SET NULL"))
+    category_id: Mapped[Optional[str]] = mapped_column(String, ForeignKey("category.id", ondelete="SET NULL"))
     
     amount: Mapped[float] = mapped_column(Float)
     type: Mapped[str] = mapped_column(String)  # INCOME, EXPENSE, TRANSFER
@@ -96,7 +97,7 @@ class Document(Base):
     __tablename__ = "document"
     
     id: Mapped[str] = mapped_column(String, primary_key=True, default=gen_uuid)
-    user_id: Mapped[str] = mapped_column(String, ForeignKey("user.id"))
+    user_id: Mapped[str] = mapped_column(String, ForeignKey("user.id", ondelete="CASCADE"))
     original_filename: Mapped[str] = mapped_column(String)
     file_path: Mapped[str] = mapped_column(String)
     mime_type: Mapped[str] = mapped_column(String)
@@ -114,9 +115,9 @@ class ProposedChange(Base):
     __tablename__ = "proposed_change"
     
     id: Mapped[str] = mapped_column(String, primary_key=True, default=gen_uuid)
-    user_id: Mapped[str] = mapped_column(String, ForeignKey("user.id"))
-    document_id: Mapped[str] = mapped_column(String, ForeignKey("document.id"))
-    target_transaction_id: Mapped[Optional[str]] = mapped_column(String, ForeignKey("transaction.id"))
+    user_id: Mapped[str] = mapped_column(String, ForeignKey("user.id", ondelete="CASCADE"))
+    document_id: Mapped[str] = mapped_column(String, ForeignKey("document.id", ondelete="CASCADE"))
+    target_transaction_id: Mapped[Optional[str]] = mapped_column(String, ForeignKey("transaction.id", ondelete="SET NULL"))
     
     change_type: Mapped[str] = mapped_column(String)  # CREATE_NEW, UPDATE_EXISTING
     status: Mapped[str] = mapped_column(String, default="PENDING")  # PENDING, APPROVED, REJECTED
