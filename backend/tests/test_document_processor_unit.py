@@ -40,12 +40,19 @@ async def test_process_document_task_pdf(db_session, auth_headers):
         # Setup SessionLocal mock to return our db_session
         mock_session_local.return_value.__aenter__.return_value = db_session
         
-        # Setup Gemini mock
+        # Setup Gemini mock for multiple calls
+        # 1st call: Extraction
+        # 2nd call: Agentic Decision
         mock_client = MagicMock()
         mock_genai_client_class.return_value = mock_client
-        mock_response = MagicMock()
-        mock_response.text = mock_gemini_json
-        mock_client.models.generate_content.return_value = mock_response
+        
+        mock_res_extraction = MagicMock()
+        mock_res_extraction.text = mock_gemini_json
+        
+        mock_res_agent = MagicMock()
+        mock_res_agent.text = '{"action": "DECIDE", "decision": "CREATE_NEW", "confidence": 0.9}'
+        
+        mock_client.models.generate_content.side_effect = [mock_res_extraction, mock_res_agent]
         
         # 3. Run the task
         await process_document_task(doc.id)

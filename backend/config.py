@@ -7,6 +7,7 @@ class Settings(BaseSettings):
     UPLOAD_DIR: Path = Path("backend/uploads")
     GOOGLE_GENAI_KEY: str = ""
     GOOGLE_GENAI_MODEL: str = "gemini-3-flash-preview"
+    GENAI_LIMIT_QUERY: int = 5
     
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
