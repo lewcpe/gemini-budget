@@ -7,7 +7,7 @@ from typing import List, Optional
 from ..database import get_db
 from ..models import Document, User
 from ..schemas import Document as DocumentSchema
-from ..dependencies import get_current_user
+from ..dependencies import get_current_user, PaginationParams
 from ..config import settings
 
 router = APIRouter(prefix="/documents", tags=["documents"])
@@ -45,10 +45,12 @@ async def upload_document(
 
 @router.get("/", response_model=List[DocumentSchema])
 async def list_documents(
+    pagination: PaginationParams = Depends(),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    result = await db.execute(select(Document).where(Document.user_id == current_user.id))
+    query = select(Document).where(Document.user_id == current_user.id).offset(pagination.skip).limit(pagination.limit)
+    result = await db.execute(query)
     return result.scalars().all()
 
 @router.delete("/{document_id}", status_code=status.HTTP_204_NO_CONTENT)

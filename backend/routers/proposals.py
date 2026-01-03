@@ -1,23 +1,28 @@
 from fastapi import APIRouter, Depends, HTTPException, status
-from datetime import datetime
+from datetime import datetime, timezone
 from sqlalchemy.future import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from typing import List
 from ..database import get_db
 from ..models import ProposedChange, Transaction, User, Account, Category, Document
 from ..schemas import ProposedChange as ProposedChangeSchema, ProposedChangeConfirm
-from ..dependencies import get_current_user
+from ..dependencies import get_current_user, PaginationParams
 
 router = APIRouter(prefix="/proposals", tags=["proposals"])
 
 @router.get("/", response_model=List[ProposedChangeSchema])
 async def list_proposals(
+    pagination: PaginationParams = Depends(),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    result = await db.execute(
-        select(ProposedChange).where(ProposedChange.user_id == current_user.id, ProposedChange.status == "PENDING")
+    query = (
+        select(ProposedChange)
+        .where(ProposedChange.user_id == current_user.id, ProposedChange.status == "PENDING")
+        .offset(pagination.skip)
+        .limit(pagination.limit)
     )
+    result = await db.execute(query)
     return result.scalars().all()
 
 @router.post("/{proposal_id}/confirm")
@@ -51,7 +56,11 @@ async def confirm_proposal(
                 category_id=data.get("category_id"),
                 amount=data.get("amount"),
                 type=data.get("type"),
-                transaction_date=datetime.fromisoformat(data.get("transaction_date")) if isinstance(data.get("transaction_date"), str) else data.get("transaction_date"),
+                transaction_date=(
+                    datetime.fromisoformat(data["transaction_date"])
+                    if isinstance(data.get("transaction_date"), str)
+                    else (data.get("transaction_date") or datetime.now(timezone.utc))
+                ),
                 note=data.get("note"),
                 merchant=data.get("merchant")
             )

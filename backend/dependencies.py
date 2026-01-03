@@ -4,6 +4,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from .database import get_db
 from .models import User
 from .config import settings
+from typing import Optional
+
+class PaginationParams:
+    def __init__(self, skip: int = 0, limit: int = 100):
+        self.skip = skip
+        self.limit = limit
 
 async def get_current_user(
     db: AsyncSession = Depends(get_db),

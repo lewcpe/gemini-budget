@@ -5,16 +5,18 @@ from typing import List
 from ..database import get_db
 from ..models import Account, User
 from ..schemas import AccountCreate, AccountUpdate, Account as AccountSchema
-from ..dependencies import get_current_user
+from ..dependencies import get_current_user, PaginationParams
 
 router = APIRouter(prefix="/accounts", tags=["accounts"])
 
 @router.get("/", response_model=List[AccountSchema])
 async def list_accounts(
+    pagination: PaginationParams = Depends(),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    result = await db.execute(select(Account).where(Account.user_id == current_user.id))
+    query = select(Account).where(Account.user_id == current_user.id).offset(pagination.skip).limit(pagination.limit)
+    result = await db.execute(query)
     return result.scalars().all()
 
 @router.post("/", response_model=AccountSchema)

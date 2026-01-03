@@ -1,20 +1,46 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, Query
 from sqlalchemy.future import select
+from sqlalchemy import or_, and_
 from sqlalchemy.ext.asyncio import AsyncSession
-from typing import List
+from typing import List, Optional
+from datetime import datetime
 from ..database import get_db
 from ..models import Transaction, User, Document
 from ..schemas import TransactionCreate, TransactionUpdate, Transaction as TransactionSchema, Document as DocumentSchema
-from ..dependencies import get_current_user
+from ..dependencies import get_current_user, PaginationParams
 
 router = APIRouter(prefix="/transactions", tags=["transactions"])
 
 @router.get("/", response_model=List[TransactionSchema])
 async def list_transactions(
+    q: Optional[str] = Query(None, description="Search merchant or note"),
+    start_date: Optional[datetime] = Query(None, description="Filter by start date"),
+    end_date: Optional[datetime] = Query(None, description="Filter by end date"),
+    pagination: PaginationParams = Depends(),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    result = await db.execute(select(Transaction).where(Transaction.user_id == current_user.id))
+    query = select(Transaction).where(Transaction.user_id == current_user.id)
+    
+    if q:
+        search_filter = or_(
+            Transaction.merchant.ilike(f"%{q}%"),
+            Transaction.note.ilike(f"%{q}%")
+        )
+        query = query.where(search_filter)
+    
+    if start_date:
+        query = query.where(Transaction.transaction_date >= start_date)
+    
+    if end_date:
+        query = query.where(Transaction.transaction_date <= end_date)
+    
+    # Order by date descending by default
+    query = query.order_by(Transaction.transaction_date.desc())
+    
+    query = query.offset(pagination.skip).limit(pagination.limit)
+    
+    result = await db.execute(query)
     return result.scalars().all()
 
 @router.post("/", response_model=TransactionSchema)
