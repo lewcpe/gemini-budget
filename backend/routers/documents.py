@@ -20,7 +20,8 @@ async def upload_document(
     current_user: User = Depends(get_current_user)
 ):
     file_id = str(uuid.uuid4())
-    extension = file.filename.split(".")[-1] if "." in file.filename else ""
+    filename = file.filename or ""
+    extension = filename.split(".")[-1] if "." in filename else ""
     safe_filename = f"{file_id}.{extension}" if extension else file_id
     file_path = settings.UPLOAD_DIR / safe_filename
     
