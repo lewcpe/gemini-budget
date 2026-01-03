@@ -85,7 +85,21 @@ async def process_document_task(document_id: str):
                 )
             )
 
-            extracted_data = json.loads(response.text)
+            if not response.text or not response.text.strip():
+                print(f"Error processing document {document_id}: Gemini returned an empty or null response.")
+                doc.status = "ERROR"
+                await db.commit()
+                return
+
+            try:
+                extracted_data = json.loads(response.text)
+            except json.JSONDecodeError as je:
+                print(f"Error decoding JSON for document {document_id}: {str(je)}")
+                print(f"Response text: {response.text}")
+                doc.status = "ERROR"
+                await db.commit()
+                return
+
             if not isinstance(extracted_data, list):
                 extracted_data = [extracted_data]
 
