@@ -10,6 +10,7 @@ class Settings(BaseSettings):
     GENAI_LIMIT_QUERY: int = 5
     DEV_MODE: bool = False
     MAX_CATEGORY: int = 100
+    GEMINI_RPM: int = 4
     CORS_ORIGINS: list[str] = ["*"]
     
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")

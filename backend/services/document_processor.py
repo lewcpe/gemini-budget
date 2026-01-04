@@ -14,6 +14,28 @@ from ..config import settings
 from ..database import SessionLocal
 from sqlalchemy import desc, or_
 import json
+import asyncio
+import time
+
+class RateLimiter:
+    def __init__(self, rpm: int):
+        self.interval = 60.0 / rpm if rpm > 0 else 0
+        self.last_call = 0.0
+        self.lock = asyncio.Lock()
+
+    async def wait(self):
+        if self.interval <= 0:
+            return
+        async with self.lock:
+            now = time.time()
+            elapsed = now - self.last_call
+            if elapsed < self.interval:
+                await asyncio.sleep(self.interval - elapsed)
+                self.last_call = time.time()
+            else:
+                self.last_call = now
+
+gemini_limiter = RateLimiter(settings.GEMINI_RPM)
 
 async def process_document_task(document_id: str):
     """
@@ -89,6 +111,7 @@ async def process_document_task(document_id: str):
             for img in images:
                 contents.append(img)
 
+            await gemini_limiter.wait()
             response = await client.aio.models.generate_content(
                 model=settings.GOOGLE_GENAI_MODEL,
                 contents=contents,
@@ -196,6 +219,7 @@ async def create_proposals_for_extracted_data(extracted_data: list, doc: Documen
         Return ONLY a JSON object.
         """
 
+        await gemini_limiter.wait()
         response = await client.aio.models.generate_content(
             model=settings.GOOGLE_GENAI_MODEL,
             contents=[prompt],
