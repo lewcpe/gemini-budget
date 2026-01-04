@@ -2,7 +2,7 @@ from fastapi import Header, Depends, HTTPException, status
 from sqlalchemy.future import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from .database import get_db
-from .models import User, Account
+from .models import User, Account, Category
 from .config import settings
 from typing import Optional
 
@@ -41,6 +41,20 @@ async def get_current_user(
         )
         db.add(petty_cash)
         
+        # Create default categories
+        default_categories = [
+            ("Food", "EXPENSE"),
+            ("Transportation", "EXPENSE"),
+            ("Housing", "EXPENSE"),
+            ("Entertainment", "EXPENSE"),
+            ("Utilities", "EXPENSE"),
+            ("Health", "EXPENSE"),
+            ("Salary", "INCOME"),
+            ("Others", "EXPENSE"),
+        ]
+        for name, cat_type in default_categories:
+            db.add(Category(user_id=user.id, name=name, type=cat_type))
+            
         await db.commit()
         await db.refresh(user)
     

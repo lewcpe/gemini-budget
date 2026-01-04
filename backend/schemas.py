@@ -158,3 +158,20 @@ class ReportDataPoint(BaseModel):
 
 class WealthReport(BaseModel):
     data_points: List[ReportDataPoint]
+
+# --- Merchant ---
+class MerchantBase(BaseModel):
+    name: str
+    default_category_id: Optional[str] = None
+
+class MerchantCreate(MerchantBase):
+    pass
+
+class MerchantUpdate(BaseModel):
+    name: Optional[str] = None
+    default_category_id: Optional[str] = None
+
+class Merchant(MerchantBase):
+    id: str
+    user_id: str
+    model_config = ConfigDict(from_attributes=True)

@@ -3,7 +3,7 @@ from unittest.mock import MagicMock, patch, AsyncMock
 from pathlib import Path
 import json
 from backend.services.document_processor import process_document_task
-from backend.models import Document, User, ProposedChange, Account
+from backend.models import Document, User, ProposedChange, Account, Category, Merchant
 from sqlalchemy import select
 
 @pytest.mark.asyncio
@@ -248,4 +248,58 @@ async def test_petty_cash_account_reuse(db_session):
         res = await db_session.execute(select(ProposedChange).where(ProposedChange.document_id == doc.id))
         proposal = res.scalars().first()
         assert proposal.proposed_data["account_id"] == petty_cash.id
+
+@pytest.mark.asyncio
+async def test_category_suggestion_via_merchant(db_session):
+    # Setup user, account, category, and merchant
+    user = User(email="cat@example.com", full_name="Cat User")
+    db_session.add(user)
+    await db_session.flush()
+    
+    acc = Account(user_id=user.id, name="Checking", type="ASSET")
+    db_session.add(acc)
+    
+    cat = Category(user_id=user.id, name="Groceries", type="EXPENSE")
+    db_session.add(cat)
+    await db_session.flush()
+    
+    merchant = Merchant(user_id=user.id, name="SuperMart", default_category_id=cat.id)
+    db_session.add(merchant)
+    await db_session.commit()
+    
+    doc = Document(user_id=user.id, original_filename="test.jpg", file_path="/tmp/test.jpg", mime_type="image/jpeg")
+    db_session.add(doc)
+    await db_session.commit()
+    
+    # Mock Gemini to return "SuperMart" but NO category_id
+    mock_res_agent = MagicMock()
+    mock_res_agent.text = json.dumps({
+        "action": "DECIDE",
+        "proposals": [
+            {
+                "type": "CREATE_NEW",
+                "data": {"amount": 55.0, "merchant": "SuperMart", "type": "EXPENSE", "account_id": acc.id},
+                "confidence": 0.9
+            }
+        ]
+    })
+    
+    with patch("backend.services.document_processor.PIL.Image.open", return_value=MagicMock()), \
+         patch("backend.services.document_processor.genai.Client") as mock_genai_client_class, \
+         patch("backend.services.document_processor.SessionLocal") as mock_session_local:
+        
+        mock_session_local.return_value.__aenter__.return_value = db_session
+        mock_client = MagicMock()
+        mock_genai_client_class.return_value = mock_client
+        
+        mock_res_ext = MagicMock()
+        mock_res_ext.text = json.dumps([{"amount": 55.0, "merchant": "SuperMart"}])
+        mock_client.aio.models.generate_content = AsyncMock(side_effect=[mock_res_ext, mock_res_agent])
+        
+        await process_document_task(doc.id)
+        
+        # Verify it suggested the "Groceries" category_id
+        res = await db_session.execute(select(ProposedChange).where(ProposedChange.document_id == doc.id))
+        proposal = res.scalars().first()
+        assert proposal.proposed_data["category_id"] == cat.id
 

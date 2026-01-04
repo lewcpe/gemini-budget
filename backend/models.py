@@ -28,6 +28,7 @@ class User(Base):
     
     accounts: Mapped[List["Account"]] = relationship(back_populates="user", cascade="all, delete-orphan")
     categories: Mapped[List["Category"]] = relationship(back_populates="user", cascade="all, delete-orphan")
+    merchants: Mapped[List["Merchant"]] = relationship(back_populates="user", cascade="all, delete-orphan")
     transactions: Mapped[List["Transaction"]] = relationship(back_populates="user", cascade="all, delete-orphan")
     documents: Mapped[List["Document"]] = relationship(back_populates="user", cascade="all, delete-orphan")
     proposals: Mapped[List["ProposedChange"]] = relationship(back_populates="user", cascade="all, delete-orphan")
@@ -130,3 +131,14 @@ class ProposedChange(Base):
     user: Mapped["User"] = relationship(back_populates="proposals")
     document: Mapped["Document"] = relationship(back_populates="proposals")
     target_transaction: Mapped[Optional["Transaction"]] = relationship()
+
+class Merchant(Base):
+    __tablename__ = "merchant"
+    
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=gen_uuid)
+    user_id: Mapped[str] = mapped_column(String, ForeignKey("user.id", ondelete="CASCADE"))
+    name: Mapped[str] = mapped_column(String, index=True)
+    default_category_id: Mapped[Optional[str]] = mapped_column(String, ForeignKey("category.id", ondelete="SET NULL"))
+    
+    user: Mapped["User"] = relationship(back_populates="merchants")
+    default_category: Mapped[Optional["Category"]] = relationship()

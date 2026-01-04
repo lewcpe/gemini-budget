@@ -9,6 +9,7 @@ class Settings(BaseSettings):
     GOOGLE_GENAI_MODEL: str = "gemini-3-flash-preview"
     GENAI_LIMIT_QUERY: int = 5
     DEV_MODE: bool = False
+    MAX_CATEGORY: int = 100
     CORS_ORIGINS: list[str] = ["*"]
     
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")

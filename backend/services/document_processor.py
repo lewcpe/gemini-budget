@@ -9,11 +9,11 @@ from google import genai
 from google.genai import types
 from sqlalchemy.future import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from ..models import Document, Transaction, ProposedChange, Account, Category
+from ..models import Document, Transaction, ProposedChange, Account, Category, Merchant
 from ..config import settings
 from ..database import SessionLocal
+from sqlalchemy import desc, or_
 import json
-from sqlalchemy import desc
 
 async def process_document_task(document_id: str):
     """
@@ -60,14 +60,25 @@ async def process_document_task(document_id: str):
             # 2. Extract transactions using Gemini
             client = genai.Client(api_key=settings.GOOGLE_GENAI_KEY)
             
-            prompt = """
+            # Fetch available categories to provide as context
+            cat_query = select(Category).where(Category.user_id == doc.user_id).limit(settings.MAX_CATEGORY)
+            cat_res = await db.execute(cat_query)
+            categories = cat_res.scalars().all()
+            category_list = [{"id": c.id, "name": c.name, "type": c.type} for c in categories]
+
+            prompt = f"""
             Extract all transactions from the following document(s). 
             For each transaction, provide:
             - amount (number)
             - merchant (string)
             - transaction_date (ISO format YYYY-MM-DD or YYYY-MM-DDTHH:MM:SS)
             - type (EXPENSE or INCOME)
+            - category (suggest a category name if possible, or try to match one from the list below)
+            - category_id (the ID of the matching category from the list below, if it fits)
             - note (any additional details)
+
+            Available Categories:
+            {json.dumps(category_list, indent=2)}
 
             Format the output as a JSON list of objects.
             Return ONLY the JSON list.
@@ -123,7 +134,9 @@ async def create_proposals_for_extracted_data(extracted_data: list, doc: Documen
     client = genai.Client(api_key=settings.GOOGLE_GENAI_KEY)
     user_id = doc.user_id
     
-    context = await get_agent_context(db, user_id)
+    # Extract merchant names for context filtering
+    extracted_merchants = list(set(item.get("merchant") for item in extracted_data if item.get("merchant")))
+    context = await get_agent_context(db, user_id, extracted_merchants)
     
     query_count = 0
     limit = settings.GENAI_LIMIT_QUERY
@@ -137,7 +150,7 @@ async def create_proposals_for_extracted_data(extracted_data: list, doc: Documen
         Extracted Transactions:
         {json.dumps(extracted_data, indent=2)}
 
-        User Context (Recent transactions and existing accounts):
+        User Context (Accounts, Categories, and Relevant Merchants):
         {json.dumps(context, indent=2)}
 
         History of your queries and results:
@@ -146,6 +159,12 @@ async def create_proposals_for_extracted_data(extracted_data: list, doc: Documen
         CRITICAL RULE:
         Every transaction MUST have an `account_id` if it is a `CREATE_NEW` or `UPDATE_EXISTING`.
         If the document doesn't specify which account was used to pay (e.g., a bill) and you cannot find a matching account in the context, use the ID of the "Petty Cash Account". If "Petty Cash Account" is not in the context, you can still reference it by name or assume it will be handled.
+        
+        CATEGORY & MERCHANT MATCHING:
+        - Try to find the best `category_id` from the available categories based on the transaction content or merchant.
+        - If the merchant name in the document is similar to one of the "merchants" in the context, use its `name` and `default_category_id`.
+        - If the transaction matches an existing transaction, use its `category_id`.
+        - If you recognize a merchant but it's not in the context, suggest a likely category name.
         
         Available Actions:
         1. QUERY: If you need more information about a specific transaction or merchant.
@@ -232,16 +251,47 @@ async def create_or_update_proposal(data: dict, doc: Document, db: AsyncSession)
     # but the logic is mostly moved to create_proposals_for_extracted_data.
     await fallback_matching_logic(data, doc, db)
 
-async def get_agent_context(db: AsyncSession, user_id: str):
-    # Last 5 transactions
-    q_t = select(Transaction).where(Transaction.user_id == user_id).order_by(desc(Transaction.transaction_date)).limit(5)
-    res_t = await db.execute(q_t)
-    transactions = res_t.scalars().all()
+async def get_agent_context(db: AsyncSession, user_id: str, relevant_merchants: Optional[List[str]] = None):
+    # Last transactions
+    q_t = select(Transaction).where(Transaction.user_id == user_id).order_by(desc(Transaction.transaction_date))
+    
+    # If we have relevant merchants, prioritize transactions from them
+    relevant_transactions: List[Transaction] = []
+    if relevant_merchants:
+        t_conditions = [Transaction.merchant.ilike(f"%{m}%") for m in relevant_merchants if m]
+        if t_conditions:
+            q_t_relevant = select(Transaction).where(Transaction.user_id == user_id, or_(*t_conditions)).limit(10)
+            res_t_rel = await db.execute(q_t_relevant)
+            relevant_transactions = list(res_t_rel.scalars().all())
+
+    res_t = await db.execute(q_t.limit(10))
+    recent_transactions = list(res_t.scalars().all())
+    
+    # Combine and deduplicate
+    all_context_transactions = {t.id: t for t in recent_transactions + relevant_transactions}.values()
     
     # All accounts
     q_a = select(Account).where(Account.user_id == user_id)
     res_a = await db.execute(q_a)
     accounts = res_a.scalars().all()
+    
+    # All categories
+    q_c = select(Category).where(Category.user_id == user_id)
+    res_c = await db.execute(q_c)
+    categories = res_c.scalars().all()
+    
+    # Filtered merchants
+    if relevant_merchants:
+        m_conditions = [Merchant.name.ilike(f"%{m}%") for m in relevant_merchants if m]
+        if m_conditions:
+            q_m = select(Merchant).where(Merchant.user_id == user_id, or_(*m_conditions))
+        else:
+            q_m = select(Merchant).where(Merchant.user_id == user_id).limit(20)
+    else:
+        q_m = select(Merchant).where(Merchant.user_id == user_id).limit(20)
+        
+    res_m = await db.execute(q_m)
+    merchants = res_m.scalars().all()
     
     return {
         "recent_transactions": [
@@ -250,10 +300,13 @@ async def get_agent_context(db: AsyncSession, user_id: str):
                 "amount": t.amount,
                 "merchant": t.merchant,
                 "date": t.transaction_date.isoformat(),
-                "type": t.type
-            } for t in transactions
+                "type": t.type,
+                "category_id": t.category_id
+            } for t in all_context_transactions
         ],
-        "accounts": [{"id": a.id, "name": a.name} for a in accounts]
+        "accounts": [{"id": a.id, "name": a.name} for a in accounts],
+        "categories": [{"id": c.id, "name": c.name, "type": c.type} for c in categories],
+        "merchants": [{"id": m.id, "name": m.name, "default_category_id": m.default_category_id} for m in merchants]
     }
 
 async def search_transactions_logic(db: AsyncSession, user_id: str, params: dict):
@@ -305,10 +358,29 @@ async def _get_petty_cash_account(db: AsyncSession, user_id: str) -> str:
         
     return account.id
 
+async def _get_merchant_default_category(db: AsyncSession, user_id: str, merchant_name: str) -> Optional[str]:
+    """
+    Looks up a merchant by name (case-insensitive) and returns its default category ID.
+    """
+    if not merchant_name:
+        return None
+    query = select(Merchant).where(
+        Merchant.user_id == user_id,
+        Merchant.name.ilike(merchant_name)
+    )
+    result = await db.execute(query)
+    merchant = result.scalars().first()
+    return merchant.default_category_id if merchant else None
+
 async def apply_proposal(data: dict, doc: Document, db: AsyncSession, change_type: str, target_id: Optional[str], confidence: float):
     # Ensure account_id for CREATE_NEW if missing
     if change_type == "CREATE_NEW" and not data.get("account_id"):
         data["account_id"] = await _get_petty_cash_account(db, doc.user_id)
+        
+    # Attempt to suggest category if missing
+    merchant_name = data.get("merchant")
+    if not data.get("category_id") and merchant_name:
+        data["category_id"] = await _get_merchant_default_category(db, doc.user_id, str(merchant_name))
 
     # Check for existing proposal for this document and target
     query_p = select(ProposedChange).where(
