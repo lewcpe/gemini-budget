@@ -67,14 +67,19 @@ async def confirm_proposal(
             if not acc_id and "_new_account" in data:
                 acc_data = data["_new_account"]
                 acc_type = acc_data.get("type")
+                acc_sub_type = acc_data.get("sub_type")
+                
                 if acc_type not in ["ASSET", "LIABILITY"]:
+                    # Robust sanitization: move original type to sub_type if empty
+                    if not acc_sub_type:
+                        acc_sub_type = acc_type
                     acc_type = "ASSET"
                 
                 new_acc = Account(
                     user_id=current_user.id,
                     name=acc_data.get("name"),
                     type=acc_type,
-                    sub_type=acc_data.get("sub_type"),
+                    sub_type=acc_sub_type,
                     currency=acc_data.get("currency", "USD"),
                     description=acc_data.get("description")
                 )

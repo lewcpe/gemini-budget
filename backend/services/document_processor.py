@@ -135,8 +135,19 @@ async def process_document_task(document_id: str):
                        }},
                        {{
                          "type": "CREATE_ACCOUNT",
-                         "new_account_data": {{"name": "...", "type": "ASSET or LIABILITY", "sub_type": "BANK, CREDIT_CARD, etc.", "description": "..."}},
-                         "transactions": [{{...}}, {{...}}],
+                         "new_account_data": {{
+                            "name": "Human-readable name", 
+                            "type": "MANDATORY: MUST BE EITHER 'ASSET' OR 'LIABILITY'", 
+                            "sub_type": "Optional: e.g., 'BANK', 'SAVINGS', 'CREDIT_CARD', 'CASH'", 
+                            "description": "..."
+                         }},
+                         "transactions": [{{
+                            "amount": 1000.0,
+                            "merchant": "Employer",
+                            "transaction_date": "2026-01-01",
+                            "type": "INCOME",
+                            "category_id": "MANDATORY: Use an ID from the context"
+                         }}],
                          "confidence": 0.95
                        }}
                      ]
@@ -178,6 +189,43 @@ async def process_document_task(document_id: str):
                     continue
                 elif res.get("action") == "DECIDE":
                     proposals = res.get("proposals", [])
+                    validation_errors = []
+                    
+                    # Extract valid IDs from context
+                    valid_account_ids = {a["id"] for a in context.get("accounts", [])}
+                    valid_category_ids = {c["id"] for c in context.get("categories", [])}
+                    valid_transaction_types = {"INCOME", "EXPENSE", "TRANSFER"}
+
+                    for p in proposals:
+                        p_type = p.get("type")
+                        if p_type == "CREATE_ACCOUNT":
+                            new_acc = p.get("new_account_data", {})
+                            if new_acc.get("type") not in ["ASSET", "LIABILITY"]:
+                                validation_errors.append(f"Invalid account type '{new_acc.get('type')}' for account '{new_acc.get('name')}'. MUST be 'ASSET' or 'LIABILITY'.")
+                            
+                            for tx in p.get("transactions", []):
+                                if tx.get("type") not in valid_transaction_types:
+                                    validation_errors.append(f"Invalid transaction type '{tx.get('type')}'. MUST be 'INCOME', 'EXPENSE', or 'TRANSFER'.")
+                                if tx.get("category_id") and tx.get("category_id") not in valid_category_ids:
+                                    validation_errors.append(f"Invalid category_id '{tx.get('category_id')}' for transaction with merchant '{tx.get('merchant')}'. This ID does not exist in your context. Use a valid ID from the provided categories list.")
+                        
+                        elif p_type in ["CREATE_NEW", "UPDATE_EXISTING"]:
+                            p_data = p.get("data", {})
+                            if p_data.get("account_id") and p_data.get("account_id") not in valid_account_ids:
+                                validation_errors.append(f"Invalid account_id '{p_data.get('account_id')}'. This ID does not exist. Use a valid ID from the provided accounts list.")
+                            if p_data.get("category_id") and p_data.get("category_id") not in valid_category_ids:
+                                validation_errors.append(f"Invalid category_id '{p_data.get('category_id')}' for merchant '{p_data.get('merchant')}'. This ID does not exist. Use a valid ID from the provided categories list.")
+                            if p_data.get("type") and p_data.get("type") not in valid_transaction_types:
+                                validation_errors.append(f"Invalid transaction type '{p_data.get('type')}'. MUST be 'INCOME', 'EXPENSE', or 'TRANSFER'.")
+
+                    if validation_errors:
+                        query_count += 1
+                        history.append({
+                            "decision": res,
+                            "errors": validation_errors
+                        })
+                        continue
+
                     for p in proposals:
                         p_type = p.get("type")
                         p_data = p.get("data")
@@ -331,25 +379,57 @@ async def _get_merchant_default_category(db: AsyncSession, user_id: str, merchan
     return merchant.default_category_id if merchant else None
 
 async def apply_proposal(data: dict, doc: Document, db: AsyncSession, change_type: str, target_id: Optional[str], confidence: float):
-    # Ensure account_id for CREATE_NEW if missing
-    if change_type == "CREATE_NEW" and not data.get("account_id"):
-        data["account_id"] = await _get_petty_cash_account(db, doc.user_id)
-        
-    # Attempt to suggest category if missing
+    # Get merchant name for category lookup
     merchant_name = data.get("merchant")
-    if not data.get("category_id") and merchant_name:
+
+    # 1. Validate and default account_id
+    acc_id = data.get("account_id")
+    if change_type == "CREATE_NEW":
+        # Check if the account exists for this user
+        valid_acc = False
+        if acc_id:
+            res_a = await db.execute(select(Account).where(Account.id == acc_id, Account.user_id == doc.user_id))
+            if res_a.scalars().first():
+                valid_acc = True
+        
+        if not valid_acc:
+            # Default to Petty Cash if hallucinated or missing
+            data["account_id"] = await _get_petty_cash_account(db, doc.user_id)
+            
+    # 2. Validate and suggest category if missing or hallucinated
+    cat_id = data.get("category_id")
+    valid_cat = False
+    if cat_id:
+        res_c = await db.execute(select(Category).where(Category.id == cat_id, Category.user_id == doc.user_id))
+        if res_c.scalars().first():
+            valid_cat = True
+    
+    if not valid_cat and merchant_name:
         data["category_id"] = await _get_merchant_default_category(db, doc.user_id, str(merchant_name))
+    elif not valid_cat:
+        data["category_id"] = None
+
+    # 3. Sanitize transaction type
+    tx_type = data.get("type", "EXPENSE")
+    if tx_type not in ["INCOME", "EXPENSE", "TRANSFER"]:
+        # Simple mapping/fallback
+        if tx_type in ["DEBIT", "PAYMENT", "CASH_OUT"]:
+            data["type"] = "EXPENSE"
+        elif tx_type in ["CREDIT", "DEPOSIT", "CASH_IN"]:
+            data["type"] = "INCOME"
+        else:
+            data["type"] = "EXPENSE"
 
     # Sanitize account type if it's CREATE_ACCOUNT
     if change_type == "CREATE_ACCOUNT" and data.get("_new_account"):
-        acc_type = data["_new_account"].get("type")
+        acc_data = data["_new_account"]
+        acc_type = acc_data.get("type")
         if acc_type not in ["ASSET", "LIABILITY"]:
             # Fallback/Sanitization: Usually bank accounts or cash are ASSETS
-            # If the AI sent 'BANK', it's an ASSET.
-            # We can also check sub_type or description, but 'ASSET' is a safe default for most things detected.
-            if acc_type == "BANK":
-                data["_new_account"]["sub_type"] = "BANK"
-            data["_new_account"]["type"] = "ASSET"
+            # If the AI sent 'BANK' or 'SAVINGS', it belongs in sub_type
+            if not acc_data.get("sub_type"):
+                acc_data["sub_type"] = acc_type
+            acc_data["type"] = "ASSET"
 
     # Check for existing proposal for this document and target
     query_p = select(ProposedChange).where(
