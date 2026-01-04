@@ -6,6 +6,7 @@ from typing import List
 from ..database import get_db
 from ..models import ProposedChange, Transaction, User, Account, Category, Document
 from ..schemas import ProposedChange as ProposedChangeSchema, ProposedChangeConfirm
+from ..services.account_service import recalculate_account_balance
 from ..dependencies import get_current_user, PaginationParams
 
 router = APIRouter(prefix="/proposals", tags=["proposals"])
@@ -53,6 +54,10 @@ async def confirm_proposal(
         if db_proposal.change_type == "CREATE_NEW":
             new_tx = await _create_transaction_from_data(data, current_user.id, proposal_id, db)
             db.add(new_tx)
+            await db.flush()
+            await recalculate_account_balance(db, new_tx.account_id)
+            if new_tx.target_account_id:
+                await recalculate_account_balance(db, new_tx.target_account_id)
 
         elif db_proposal.change_type == "CREATE_ACCOUNT":
             # Handle one or more transactions, with optional new account creation
@@ -87,6 +92,10 @@ async def confirm_proposal(
                 tx_item["account_id"] = acc_id
                 new_tx = await _create_transaction_from_data(tx_item, current_user.id, proposal_id, db)
                 db.add(new_tx)
+                await db.flush()
+                await recalculate_account_balance(db, acc_id)
+                if new_tx.target_account_id:
+                    await recalculate_account_balance(db, new_tx.target_account_id)
 
         elif db_proposal.change_type == "UPDATE_EXISTING":
             if not db_proposal.target_transaction_id:
@@ -99,9 +108,25 @@ async def confirm_proposal(
             if not tx:
                 raise HTTPException(status_code=404, detail="Target transaction not found")
             
+            old_account_id = tx.account_id
+            old_target_account_id = tx.target_account_id
+            
             for key, value in data.items():
                 if hasattr(tx, key) and key != "id":
                     setattr(tx, key, value)
+            
+            await db.flush()
+            
+            # Update balances for all affected accounts
+            affected_accounts = {old_account_id, tx.account_id}
+            if old_target_account_id:
+                affected_accounts.add(old_target_account_id)
+            if tx.target_account_id:
+                affected_accounts.add(tx.target_account_id)
+                
+            for acc_id in affected_accounts:
+                if acc_id:
+                    await recalculate_account_balance(db, acc_id)
         
         db_proposal.status = "APPROVED"
         await db.commit()

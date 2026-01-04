@@ -8,6 +8,7 @@ from ..database import get_db
 from ..models import Transaction, User, Document
 from ..schemas import TransactionCreate, TransactionUpdate, Transaction as TransactionSchema, Document as DocumentSchema
 from ..dependencies import get_current_user, PaginationParams
+from ..services.account_service import recalculate_account_balance
 
 router = APIRouter(prefix="/transactions", tags=["transactions"])
 
@@ -53,6 +54,13 @@ async def create_transaction(
     db.add(db_transaction)
     await db.commit()
     await db.refresh(db_transaction)
+    
+    # Update balance
+    await recalculate_account_balance(db, db_transaction.account_id)
+    if db_transaction.target_account_id:
+        await recalculate_account_balance(db, db_transaction.target_account_id)
+    await db.commit()
+
     return db_transaction
 
 @router.patch("/{transaction_id}", response_model=TransactionSchema)
@@ -70,11 +78,27 @@ async def update_transaction(
         raise HTTPException(status_code=404, detail="Transaction not found")
     
     update_data = transaction_update.model_dump(exclude_unset=True)
+    old_account_id = db_transaction.account_id
+    old_target_account_id = db_transaction.target_account_id
+    
     for key, value in update_data.items():
         setattr(db_transaction, key, value)
     
     await db.commit()
     await db.refresh(db_transaction)
+    
+    # Update balances for all affected accounts
+    affected_accounts = {old_account_id, db_transaction.account_id}
+    if old_target_account_id:
+        affected_accounts.add(old_target_account_id)
+    if db_transaction.target_account_id:
+        affected_accounts.add(db_transaction.target_account_id)
+        
+    for acc_id in affected_accounts:
+        if acc_id:
+            await recalculate_account_balance(db, acc_id)
+    
+    await db.commit()
     return db_transaction
 
 @router.delete("/{transaction_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -89,9 +113,19 @@ async def delete_transaction(
     db_transaction = result.scalars().first()
     if not db_transaction:
         raise HTTPException(status_code=404, detail="Transaction not found")
+        
+    account_id = db_transaction.account_id
+    target_account_id = db_transaction.target_account_id
     
     await db.delete(db_transaction)
     await db.commit()
+    
+    # Update balances
+    await recalculate_account_balance(db, account_id)
+    if target_account_id:
+        await recalculate_account_balance(db, target_account_id)
+    await db.commit()
+    
     return None
 
 @router.get("/{transaction_id}/documents", response_model=List[DocumentSchema])
