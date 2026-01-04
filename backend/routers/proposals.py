@@ -66,10 +66,14 @@ async def confirm_proposal(
             # 1. Create Account if NO account_id provided (meaning user accepts the proposal as is)
             if not acc_id and "_new_account" in data:
                 acc_data = data["_new_account"]
+                acc_type = acc_data.get("type")
+                if acc_type not in ["ASSET", "LIABILITY"]:
+                    acc_type = "ASSET"
+                
                 new_acc = Account(
                     user_id=current_user.id,
                     name=acc_data.get("name"),
-                    type=acc_data.get("type", "ASSET"),
+                    type=acc_type,
                     sub_type=acc_data.get("sub_type"),
                     currency=acc_data.get("currency", "USD"),
                     description=acc_data.get("description")

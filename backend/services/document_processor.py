@@ -106,6 +106,7 @@ async def process_document_task(document_id: str):
                 2. If the document clearly belongs to a specific account (e.g., a credit card statement) that is NOT in the context, propose `CREATE_ACCOUNT`.
                 3. If you cannot find a matching account in the context or suggestions, use the ID of the "Petty Cash Account".
                 4. CATEGORY MATCHING: Use the provided categories. If you're unsure, suggest a likely category name.
+                5. ACCOUNT TYPES: When proposing `CREATE_ACCOUNT`, the `type` MUST be exactly 'ASSET' or 'LIABILITY'. Use `sub_type` for specific details (e.g., 'BANK', 'CREDIT_CARD', 'CASH', 'INVESTMENT').
                 
                 Available Actions:
                 1. QUERY: If you need to search for more transactions to confirm a match.
@@ -134,7 +135,7 @@ async def process_document_task(document_id: str):
                        }},
                        {{
                          "type": "CREATE_ACCOUNT",
-                         "new_account_data": {{"name": "...", "type": "...", "sub_type": "...", "description": "..."}},
+                         "new_account_data": {{"name": "...", "type": "ASSET or LIABILITY", "sub_type": "BANK, CREDIT_CARD, etc.", "description": "..."}},
                          "transactions": [{{...}}, {{...}}],
                          "confidence": 0.95
                        }}
@@ -338,6 +339,17 @@ async def apply_proposal(data: dict, doc: Document, db: AsyncSession, change_typ
     merchant_name = data.get("merchant")
     if not data.get("category_id") and merchant_name:
         data["category_id"] = await _get_merchant_default_category(db, doc.user_id, str(merchant_name))
+
+    # Sanitize account type if it's CREATE_ACCOUNT
+    if change_type == "CREATE_ACCOUNT" and data.get("_new_account"):
+        acc_type = data["_new_account"].get("type")
+        if acc_type not in ["ASSET", "LIABILITY"]:
+            # Fallback/Sanitization: Usually bank accounts or cash are ASSETS
+            # If the AI sent 'BANK', it's an ASSET.
+            # We can also check sub_type or description, but 'ASSET' is a safe default for most things detected.
+            if acc_type == "BANK":
+                data["_new_account"]["sub_type"] = "BANK"
+            data["_new_account"]["type"] = "ASSET"
 
     # Check for existing proposal for this document and target
     query_p = select(ProposedChange).where(
