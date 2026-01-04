@@ -281,9 +281,10 @@ async def search_transactions_logic(db: AsyncSession, user_id: str, params: dict
         } for t in transactions
     ]
 
-async def _get_or_create_petty_cash_account(db: AsyncSession, user_id: str) -> str:
+async def _get_petty_cash_account(db: AsyncSession, user_id: str) -> str:
     """
-    Finds or creates a 'Petty Cash Account' for the user.
+    Finds the 'Petty Cash Account' for the user.
+    It's expected to have been created during user registration.
     """
     query = select(Account).where(
         Account.user_id == user_id,
@@ -293,23 +294,21 @@ async def _get_or_create_petty_cash_account(db: AsyncSession, user_id: str) -> s
     account = result.scalars().first()
     
     if not account:
-        account = Account(
-            user_id=user_id,
-            name="Petty Cash Account",
-            type="ASSET",
-            sub_type="CASH",
-            currency="USD",
-            description="Default account for miscellaneous cash expenses and bills without specified accounts."
-        )
-        db.add(account)
-        await db.flush() # Get the ID
+        # Fallback to any account if Petty Cash is missing for some reason
+        # (Though it should exist)
+        fallback_query = select(Account).where(Account.user_id == user_id).limit(1)
+        fallback_res = await db.execute(fallback_query)
+        account = fallback_res.scalars().first()
+        
+    if not account:
+        raise ValueError(f"No accounts found for user {user_id}")
         
     return account.id
 
 async def apply_proposal(data: dict, doc: Document, db: AsyncSession, change_type: str, target_id: Optional[str], confidence: float):
     # Ensure account_id for CREATE_NEW if missing
     if change_type == "CREATE_NEW" and not data.get("account_id"):
-        data["account_id"] = await _get_or_create_petty_cash_account(db, doc.user_id)
+        data["account_id"] = await _get_petty_cash_account(db, doc.user_id)
 
     # Check for existing proposal for this document and target
     query_p = select(ProposedChange).where(
@@ -364,6 +363,6 @@ async def fallback_matching_logic(data: dict, doc: Document, db: AsyncSession):
     target_id = match.id if match else None
     
     if change_type == "CREATE_NEW" and not data.get("account_id"):
-        data["account_id"] = await _get_or_create_petty_cash_account(db, doc.user_id)
+        data["account_id"] = await _get_petty_cash_account(db, doc.user_id)
         
     await apply_proposal(data, doc, db, change_type, target_id, 0.7)

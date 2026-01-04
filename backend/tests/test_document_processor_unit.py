@@ -22,6 +22,11 @@ async def test_process_document_task_pdf(db_session, auth_headers):
         status="PENDING"
     )
     db_session.add(doc)
+    
+    # Create Petty Cash Account (normally created by dependencies.py)
+    petty_cash = Account(user_id=user.id, name="Petty Cash Account", type="ASSET")
+    db_session.add(petty_cash)
+    
     await db_session.commit()
     await db_session.refresh(doc)
 
@@ -145,6 +150,11 @@ async def test_process_document_task_batch(db_session, auth_headers):
     
     doc = Document(user_id=user.id, original_filename="batch.jpg", file_path="/tmp/batch.jpg", mime_type="image/jpeg")
     db_session.add(doc)
+    
+    # Create Petty Cash Account
+    petty_cash = Account(user_id=user.id, name="Petty Cash Account", type="ASSET")
+    db_session.add(petty_cash)
+    
     await db_session.commit()
 
     with patch("backend.services.document_processor.PIL.Image.open", return_value=MagicMock()), \

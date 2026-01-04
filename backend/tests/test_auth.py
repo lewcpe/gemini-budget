@@ -9,6 +9,10 @@ async def test_get_current_user_new_user(client: AsyncClient):
     res = await client.get("/accounts/", headers={settings.AUTH_EMAIL_HEADER: email})
     assert res.status_code == 200
     # The user should have been created in the background
+    accounts = res.json()
+    assert len(accounts) == 1
+    assert accounts[0]["name"] == "Petty Cash Account"
+    assert accounts[0]["type"] == "ASSET"
 
 @pytest.mark.asyncio
 async def test_get_current_user_missing_header(client: AsyncClient):

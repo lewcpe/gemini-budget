@@ -38,10 +38,12 @@ async def test_account_user_isolation(client: AsyncClient, auth_headers: dict, a
         headers=auth_headers
     )
     
-    # User 2 list accounts, should be empty
+    # User 2 list accounts, should have 1 (Petty Cash Account)
     response = await client.get("/accounts/", headers=auth_headers_other)
     assert response.status_code == 200
-    assert len(response.json()) == 0
+    data = response.json()
+    assert len(data) == 1
+    assert data[0]["name"] == "Petty Cash Account"
 
 @pytest.mark.asyncio
 async def test_update_account(client: AsyncClient, auth_headers: dict):

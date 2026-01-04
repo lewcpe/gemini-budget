@@ -2,7 +2,7 @@ from fastapi import Header, Depends, HTTPException, status
 from sqlalchemy.future import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from .database import get_db
-from .models import User
+from .models import User, Account
 from .config import settings
 from typing import Optional
 
@@ -28,6 +28,19 @@ async def get_current_user(
     if not user:
         user = User(email=x_forwarded_email, full_name=x_forwarded_email.split("@")[0])
         db.add(user)
+        await db.flush() # Flush to get user.id
+        
+        # Create default Petty Cash Account
+        petty_cash = Account(
+            user_id=user.id,
+            name="Petty Cash Account",
+            type="ASSET",
+            sub_type="CASH",
+            currency="USD",
+            description="Default account for miscellaneous cash expenses and bills without specified accounts."
+        )
+        db.add(petty_cash)
+        
         await db.commit()
         await db.refresh(user)
     
