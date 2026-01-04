@@ -3,7 +3,7 @@ from unittest.mock import MagicMock, patch, AsyncMock
 from pathlib import Path
 import json
 from backend.services.document_processor import process_document_task
-from backend.models import Document, User, ProposedChange
+from backend.models import Document, User, ProposedChange, Account
 from sqlalchemy import select
 
 @pytest.mark.asyncio
@@ -81,6 +81,13 @@ async def test_process_document_task_pdf(db_session, auth_headers):
         assert len(proposals) == 1
         assert proposals[0].proposed_data["amount"] == 100.0
         assert proposals[0].proposed_data["merchant"] == "Test Shop"
+        # Verify Petty Cash Account was assigned
+        assert "account_id" in proposals[0].proposed_data
+        
+        # Verify account was created
+        acc_res = await db_session.execute(select(Account).where(Account.id == proposals[0].proposed_data["account_id"]))
+        acc = acc_res.scalar()
+        assert acc.name == "Petty Cash Account"
 
 @pytest.mark.asyncio
 async def test_process_document_task_unsupported_mime(db_session):
@@ -183,3 +190,52 @@ async def test_process_document_task_batch(db_session, auth_headers):
         assert proposals[0].change_type == "CREATE_ACCOUNT"
         assert len(proposals[0].proposed_data["transactions"]) == 2
         assert proposals[0].proposed_data["_new_account"]["name"] == "Batch Card"
+
+@pytest.mark.asyncio
+async def test_petty_cash_account_reuse(db_session):
+    # Setup user and an existing Petty Cash Account
+    user = User(email="reuse@example.com", full_name="Reuse User")
+    db_session.add(user)
+    await db_session.flush()
+    
+    petty_cash = Account(user_id=user.id, name="Petty Cash Account", type="ASSET")
+    db_session.add(petty_cash)
+    await db_session.commit()
+    
+    doc = Document(user_id=user.id, original_filename="test.jpg", file_path="/tmp/test.jpg", mime_type="image/jpeg")
+    db_session.add(doc)
+    await db_session.commit()
+    
+    # Mock return from Gemini (DECIDE with CREATE_NEW but NO account_id)
+    mock_res_agent = MagicMock()
+    mock_res_agent.text = json.dumps({
+        "action": "DECIDE",
+        "proposals": [
+            {
+                "type": "CREATE_NEW",
+                "data": {"amount": 50.0, "merchant": "Small Shop", "type": "EXPENSE"},
+                "confidence": 0.9
+            }
+        ]
+    })
+    
+    with patch("backend.services.document_processor.PIL.Image.open", return_value=MagicMock()), \
+         patch("backend.services.document_processor.genai.Client") as mock_genai_client_class, \
+         patch("backend.services.document_processor.SessionLocal") as mock_session_local:
+        
+        mock_session_local.return_value.__aenter__.return_value = db_session
+        mock_client = MagicMock()
+        mock_genai_client_class.return_value = mock_client
+        
+        # 1st call return data, 2nd call DECIDE
+        mock_res_ext = MagicMock()
+        mock_res_ext.text = json.dumps([{"amount": 50.0, "merchant": "Small Shop"}])
+        mock_client.aio.models.generate_content = AsyncMock(side_effect=[mock_res_ext, mock_res_agent])
+        
+        await process_document_task(doc.id)
+        
+        # Verify it used the EXISTING petty cash account ID
+        res = await db_session.execute(select(ProposedChange).where(ProposedChange.document_id == doc.id))
+        proposal = res.scalars().first()
+        assert proposal.proposed_data["account_id"] == petty_cash.id
+

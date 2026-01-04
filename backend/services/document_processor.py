@@ -143,6 +143,10 @@ async def create_proposals_for_extracted_data(extracted_data: list, doc: Documen
         History of your queries and results:
         {json.dumps(history, indent=2)}
 
+        CRITICAL RULE:
+        Every transaction MUST have an `account_id` if it is a `CREATE_NEW` or `UPDATE_EXISTING`.
+        If the document doesn't specify which account was used to pay (e.g., a bill) and you cannot find a matching account in the context, use the ID of the "Petty Cash Account". If "Petty Cash Account" is not in the context, you can still reference it by name or assume it will be handled.
+        
         Available Actions:
         1. QUERY: If you need more information about a specific transaction or merchant.
            Example: {{"action": "QUERY", "params": {{"merchant": "Amazon", "amount": 25.00}}}}
@@ -277,7 +281,36 @@ async def search_transactions_logic(db: AsyncSession, user_id: str, params: dict
         } for t in transactions
     ]
 
+async def _get_or_create_petty_cash_account(db: AsyncSession, user_id: str) -> str:
+    """
+    Finds or creates a 'Petty Cash Account' for the user.
+    """
+    query = select(Account).where(
+        Account.user_id == user_id,
+        Account.name == "Petty Cash Account"
+    )
+    result = await db.execute(query)
+    account = result.scalars().first()
+    
+    if not account:
+        account = Account(
+            user_id=user_id,
+            name="Petty Cash Account",
+            type="ASSET",
+            sub_type="CASH",
+            currency="USD",
+            description="Default account for miscellaneous cash expenses and bills without specified accounts."
+        )
+        db.add(account)
+        await db.flush() # Get the ID
+        
+    return account.id
+
 async def apply_proposal(data: dict, doc: Document, db: AsyncSession, change_type: str, target_id: Optional[str], confidence: float):
+    # Ensure account_id for CREATE_NEW if missing
+    if change_type == "CREATE_NEW" and not data.get("account_id"):
+        data["account_id"] = await _get_or_create_petty_cash_account(db, doc.user_id)
+
     # Check for existing proposal for this document and target
     query_p = select(ProposedChange).where(
         ProposedChange.document_id == doc.id,
@@ -330,4 +363,7 @@ async def fallback_matching_logic(data: dict, doc: Document, db: AsyncSession):
     change_type = "UPDATE_EXISTING" if match else "CREATE_NEW"
     target_id = match.id if match else None
     
+    if change_type == "CREATE_NEW" and not data.get("account_id"):
+        data["account_id"] = await _get_or_create_petty_cash_account(db, doc.user_id)
+        
     await apply_proposal(data, doc, db, change_type, target_id, 0.7)
