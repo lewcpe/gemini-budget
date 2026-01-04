@@ -46,17 +46,12 @@ async def test_process_document_task_pdf(db_session, auth_headers):
         # Setup SessionLocal mock to return our db_session
         mock_session_local.return_value.__aenter__.return_value = db_session
         
-        # Setup Gemini mock for multiple calls
-        # 1st call: Extraction
-        # 2nd call: Agentic Decision
+        # Setup Gemini mock for integrated agentic loop
         mock_client = MagicMock()
         mock_genai_client_class.return_value = mock_client
         
-        mock_res_extraction = MagicMock()
-        mock_res_extraction.text = mock_gemini_json
-        
-        mock_res_agent = MagicMock()
-        mock_res_agent.text = json.dumps({
+        mock_res = MagicMock()
+        mock_res.text = json.dumps({
             "action": "DECIDE",
             "proposals": [
                 {
@@ -67,7 +62,7 @@ async def test_process_document_task_pdf(db_session, auth_headers):
             ]
         })
         
-        mock_client.aio.models.generate_content = AsyncMock(side_effect=[mock_res_extraction, mock_res_agent])
+        mock_client.aio.models.generate_content = AsyncMock(return_value=mock_res)
         
         # 3. Run the task
         await process_document_task(doc.id)
@@ -165,14 +160,7 @@ async def test_process_document_task_batch(db_session, auth_headers):
         mock_client = MagicMock()
         mock_genai_client_class.return_value = mock_client
         
-        # 1st call: Extraction (2 items)
-        mock_res_extraction = MagicMock()
-        mock_res_extraction.text = json.dumps([
-            {"amount": 10.0, "merchant": "A"},
-            {"amount": 20.0, "merchant": "B"}
-        ])
-        
-        # 2nd call: Agentic Decision (1 account proposal)
+        # Call: Agentic Decision (1 account proposal with batch)
         mock_res_agent = MagicMock()
         mock_res_agent.text = json.dumps({
             "action": "DECIDE",
@@ -189,7 +177,7 @@ async def test_process_document_task_batch(db_session, auth_headers):
             ]
         })
         
-        mock_client.aio.models.generate_content = AsyncMock(side_effect=[mock_res_extraction, mock_res_agent])
+        mock_client.aio.models.generate_content = AsyncMock(return_value=mock_res_agent)
         
         await process_document_task(doc.id)
         
@@ -216,19 +204,6 @@ async def test_petty_cash_account_reuse(db_session):
     db_session.add(doc)
     await db_session.commit()
     
-    # Mock return from Gemini (DECIDE with CREATE_NEW but NO account_id)
-    mock_res_agent = MagicMock()
-    mock_res_agent.text = json.dumps({
-        "action": "DECIDE",
-        "proposals": [
-            {
-                "type": "CREATE_NEW",
-                "data": {"amount": 50.0, "merchant": "Small Shop", "type": "EXPENSE"},
-                "confidence": 0.9
-            }
-        ]
-    })
-    
     with patch("backend.services.document_processor.PIL.Image.open", return_value=MagicMock()), \
          patch("backend.services.document_processor.genai.Client") as mock_genai_client_class, \
          patch("backend.services.document_processor.SessionLocal") as mock_session_local:
@@ -237,10 +212,20 @@ async def test_petty_cash_account_reuse(db_session):
         mock_client = MagicMock()
         mock_genai_client_class.return_value = mock_client
         
-        # 1st call return data, 2nd call DECIDE
-        mock_res_ext = MagicMock()
-        mock_res_ext.text = json.dumps([{"amount": 50.0, "merchant": "Small Shop"}])
-        mock_client.aio.models.generate_content = AsyncMock(side_effect=[mock_res_ext, mock_res_agent])
+        # Mock return from Gemini (DECIDE with CREATE_NEW but NO account_id)
+        mock_res_agent = MagicMock()
+        mock_res_agent.text = json.dumps({
+            "action": "DECIDE",
+            "proposals": [
+                {
+                    "type": "CREATE_NEW",
+                    "data": {"amount": 50.0, "merchant": "Small Shop", "type": "EXPENSE"},
+                    "confidence": 0.9
+                }
+            ]
+        })
+        
+        mock_client.aio.models.generate_content = AsyncMock(return_value=mock_res_agent)
         
         await process_document_task(doc.id)
         
@@ -271,19 +256,6 @@ async def test_category_suggestion_via_merchant(db_session):
     db_session.add(doc)
     await db_session.commit()
     
-    # Mock Gemini to return "SuperMart" but NO category_id
-    mock_res_agent = MagicMock()
-    mock_res_agent.text = json.dumps({
-        "action": "DECIDE",
-        "proposals": [
-            {
-                "type": "CREATE_NEW",
-                "data": {"amount": 55.0, "merchant": "SuperMart", "type": "EXPENSE", "account_id": acc.id},
-                "confidence": 0.9
-            }
-        ]
-    })
-    
     with patch("backend.services.document_processor.PIL.Image.open", return_value=MagicMock()), \
          patch("backend.services.document_processor.genai.Client") as mock_genai_client_class, \
          patch("backend.services.document_processor.SessionLocal") as mock_session_local:
@@ -292,9 +264,20 @@ async def test_category_suggestion_via_merchant(db_session):
         mock_client = MagicMock()
         mock_genai_client_class.return_value = mock_client
         
-        mock_res_ext = MagicMock()
-        mock_res_ext.text = json.dumps([{"amount": 55.0, "merchant": "SuperMart"}])
-        mock_client.aio.models.generate_content = AsyncMock(side_effect=[mock_res_ext, mock_res_agent])
+        # Mock Gemini to return "SuperMart" but NO category_id
+        mock_res_agent = MagicMock()
+        mock_res_agent.text = json.dumps({
+            "action": "DECIDE",
+            "proposals": [
+                {
+                    "type": "CREATE_NEW",
+                    "data": {"amount": 55.0, "merchant": "SuperMart", "type": "EXPENSE", "account_id": acc.id},
+                    "confidence": 0.9
+                }
+            ]
+        })
+        
+        mock_client.aio.models.generate_content = AsyncMock(return_value=mock_res_agent)
         
         await process_document_task(doc.id)
         
@@ -302,4 +285,50 @@ async def test_category_suggestion_via_merchant(db_session):
         res = await db_session.execute(select(ProposedChange).where(ProposedChange.document_id == doc.id))
         proposal = res.scalars().first()
         assert proposal.proposed_data["category_id"] == cat.id
+
+@pytest.mark.asyncio
+async def test_process_document_task_suggest_account(db_session, auth_headers):
+    # Setup
+    user = User(email="suggest_acc@example.com", full_name="Suggest Acc User")
+    db_session.add(user)
+    await db_session.flush()
+    
+    doc = Document(user_id=user.id, original_filename="statement.jpg", file_path="/tmp/statement.jpg", mime_type="image/jpeg")
+    db_session.add(doc)
+    await db_session.commit()
+
+    with patch("backend.services.document_processor.PIL.Image.open", return_value=MagicMock()), \
+         patch("backend.services.document_processor.genai.Client") as mock_genai_client_class, \
+         patch("backend.services.document_processor.SessionLocal") as mock_session_local:
+        
+        mock_session_local.return_value.__aenter__.return_value = db_session
+        mock_client = MagicMock()
+        mock_genai_client_class.return_value = mock_client
+        
+        # Mock Gemini Decision
+        mock_res_agent = MagicMock()
+        mock_res_agent.text = json.dumps({
+            "action": "DECIDE",
+            "proposals": [
+                {
+                    "type": "CREATE_ACCOUNT",
+                    "new_account_data": {"name": "New Salary Account", "type": "ASSET"},
+                    "transactions": [
+                        {"amount": 1200.0, "merchant": "Employer", "transaction_date": "2026-01-01", "type": "INCOME"}
+                    ],
+                    "confidence": 0.98
+                }
+            ]
+        })
+        
+        mock_client.aio.models.generate_content = AsyncMock(return_value=mock_res_agent)
+        
+        await process_document_task(doc.id)
+        
+        # Verify proposal
+        res = await db_session.execute(select(ProposedChange).where(ProposedChange.document_id == doc.id))
+        proposals = res.scalars().all()
+        assert len(proposals) == 1
+        assert proposals[0].change_type == "CREATE_ACCOUNT"
+        assert proposals[0].proposed_data["_new_account"]["name"] == "New Salary Account"
 

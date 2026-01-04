@@ -79,68 +79,127 @@ async def process_document_task(document_id: str):
                 await db.commit()
                 return
 
-            # 2. Extract transactions using Gemini
+            # 2. Unified Agentic Loop
             client = genai.Client(api_key=settings.GOOGLE_GENAI_KEY)
+            user_id = doc.user_id
             
-            # Fetch available categories to provide as context
-            cat_query = select(Category).where(Category.user_id == doc.user_id).limit(settings.MAX_CATEGORY)
-            cat_res = await db.execute(cat_query)
-            categories = cat_res.scalars().all()
-            category_list = [{"id": c.id, "name": c.name, "type": c.type} for c in categories]
+            # Initial context (without merchant filtering yet, or we can do a broad one)
+            context = await get_agent_context(db, user_id)
+            
+            query_count = 0
+            limit = settings.GENAI_LIMIT_QUERY
+            history = []
 
-            prompt = f"""
-            Extract all transactions from the following document(s). 
-            For each transaction, provide:
-            - amount (number)
-            - merchant (string)
-            - transaction_date (ISO format YYYY-MM-DD or YYYY-MM-DDTHH:MM:SS)
-            - type (EXPENSE or INCOME)
-            - category (suggest a category name if possible, or try to match one from the list below)
-            - category_id (the ID of the matching category from the list below, if it fits)
-            - note (any additional details)
+            while query_count < limit:
+                prompt = f"""
+                You are an intelligent accounting assistant. Your goal is to extract all transactions from the following document images
+                and decide whether they match existing ones, should be created individually, or part of a batch.
 
-            Available Categories:
-            {json.dumps(category_list, indent=2)}
+                User Context (Accounts, Categories, and Recent Transactions):
+                {json.dumps(context, indent=2)}
 
-            Format the output as a JSON list of objects.
-            Return ONLY the JSON list.
-            """
+                History of your queries and results:
+                {json.dumps(history, indent=2)}
 
-            # Prepare multimodal content
-            contents = [prompt]
-            for img in images:
-                contents.append(img)
+                CRITICAL RULES:
+                1. Every transaction MUST have an `account_id` if it is a `CREATE_NEW` or `UPDATE_EXISTING`.
+                2. If the document clearly belongs to a specific account (e.g., a credit card statement) that is NOT in the context, propose `CREATE_ACCOUNT`.
+                3. If you cannot find a matching account in the context or suggestions, use the ID of the "Petty Cash Account".
+                4. CATEGORY MATCHING: Use the provided categories. If you're unsure, suggest a likely category name.
+                
+                Available Actions:
+                1. QUERY: If you need to search for more transactions to confirm a match.
+                   Example: {{"action": "QUERY", "params": {{"merchant": "Amazon", "amount": 25.00}}}}
+                2. DECIDE: Make a final proposal for the document. You can return multiple proposals.
+                   Decision Options for each item: 
+                   - "CREATE_NEW": No matching transaction found.
+                   - "UPDATE_EXISTING": Match found. Provide `target_transaction_id`.
+                   - "CREATE_ACCOUNT": If transactions belong to a NEW account. Provide `new_account_data` and the list of `transactions`.
 
-            await gemini_limiter.wait()
-            response = await client.aio.models.generate_content(
-                model=settings.GOOGLE_GENAI_MODEL,
-                contents=contents,
-                config=types.GenerateContentConfig(
-                    response_mime_type='application/json',
+                   Return format for DECIDE:
+                   {{
+                     "action": "DECIDE",
+                     "proposals": [
+                       {{
+                         "type": "CREATE_NEW",
+                         "data": {{
+                            "amount": 10.50,
+                            "merchant": "Coffee Shop",
+                            "transaction_date": "2026-01-01",
+                            "type": "EXPENSE",
+                            "category_id": "cat_123",
+                            "account_id": "acc_456"
+                         }},
+                         "confidence": 0.9
+                       }},
+                       {{
+                         "type": "CREATE_ACCOUNT",
+                         "new_account_data": {{"name": "...", "type": "...", "sub_type": "...", "description": "..."}},
+                         "transactions": [{{...}}, {{...}}],
+                         "confidence": 0.95
+                       }}
+                     ]
+                   }}
+
+                Return ONLY a JSON object.
+                """
+
+                # Prepare multimodal content: Prompt + Images
+                contents = [prompt]
+                for img in images:
+                    contents.append(img)
+
+                await gemini_limiter.wait()
+                response = await client.aio.models.generate_content(
+                    model=settings.GOOGLE_GENAI_MODEL,
+                    contents=contents,
+                    config=types.GenerateContentConfig(
+                        response_mime_type='application/json',
+                    )
                 )
-            )
 
-            if not response.text or not response.text.strip():
-                print(f"Error processing document {document_id}: Gemini returned an empty or null response.")
-                doc.status = "ERROR"
-                await db.commit()
-                return
+                if not response.text or not response.text.strip():
+                    break
 
-            try:
-                extracted_data = json.loads(response.text)
-            except json.JSONDecodeError as je:
-                print(f"Error decoding JSON for document {document_id}: {str(je)}")
-                print(f"Response text: {response.text}")
-                doc.status = "ERROR"
-                await db.commit()
-                return
+                try:
+                    res = json.loads(response.text)
+                except json.JSONDecodeError:
+                    break
 
-            if not isinstance(extracted_data, list):
-                extracted_data = [extracted_data]
+                if res.get("action") == "QUERY":
+                    query_count += 1
+                    params = res.get("params", {})
+                    search_results = await search_transactions_logic(db, user_id, params)
+                    history.append({
+                        "query": params,
+                        "results": search_results
+                    })
+                    continue
+                elif res.get("action") == "DECIDE":
+                    proposals = res.get("proposals", [])
+                    for p in proposals:
+                        p_type = p.get("type")
+                        p_data = p.get("data")
+                        p_confidence = p.get("confidence", 0.7)
+                        
+                        if p_type == "CREATE_ACCOUNT":
+                            batch_data = {
+                                "_new_account": p.get("new_account_data"),
+                                "transactions": p.get("transactions")
+                            }
+                            await apply_proposal(batch_data, doc, db, "CREATE_ACCOUNT", None, p_confidence)
+                        elif p_type == "UPDATE_EXISTING":
+                            await apply_proposal(p_data, doc, db, "UPDATE_EXISTING", p.get("target_transaction_id"), p_confidence)
+                        else:
+                            await apply_proposal(p_data, doc, db, "CREATE_NEW", None, p_confidence)
+                    
+                    doc.status = "PROCESSED"
+                    await db.commit()
+                    return
+                else:
+                    break
 
-            # 3. Match and Propose (Batch)
-            await create_proposals_for_extracted_data(extracted_data, doc, db)
-
+            # Fallback (optional, if DECIDE was never reached)
             doc.status = "PROCESSED"
             await db.commit()
 
@@ -148,132 +207,6 @@ async def process_document_task(document_id: str):
             print(f"Error processing document {document_id}: {str(e)}")
             doc.status = "ERROR"
             await db.commit()
-
-async def create_proposals_for_extracted_data(extracted_data: list, doc: Document, db: AsyncSession):
-    """
-    Agentic loop to process all transactions from a document at once.
-    Allows for batching (e.g., New Account + Multiple Transactions).
-    """
-    client = genai.Client(api_key=settings.GOOGLE_GENAI_KEY)
-    user_id = doc.user_id
-    
-    # Extract merchant names for context filtering
-    extracted_merchants = list(set(item.get("merchant") for item in extracted_data if item.get("merchant")))
-    context = await get_agent_context(db, user_id, extracted_merchants)
-    
-    query_count = 0
-    limit = settings.GENAI_LIMIT_QUERY
-    history = []
-
-    while query_count < limit:
-        prompt = f"""
-        You are an intelligent accounting assistant. Your goal is to process the following extracted transactions
-        and decide whether they match existing ones, should be created individually, or part of a batch.
-
-        Extracted Transactions:
-        {json.dumps(extracted_data, indent=2)}
-
-        User Context (Accounts, Categories, and Relevant Merchants):
-        {json.dumps(context, indent=2)}
-
-        History of your queries and results:
-        {json.dumps(history, indent=2)}
-
-        CRITICAL RULE:
-        Every transaction MUST have an `account_id` if it is a `CREATE_NEW` or `UPDATE_EXISTING`.
-        If the document doesn't specify which account was used to pay (e.g., a bill) and you cannot find a matching account in the context, use the ID of the "Petty Cash Account". If "Petty Cash Account" is not in the context, you can still reference it by name or assume it will be handled.
-        
-        CATEGORY & MERCHANT MATCHING:
-        - Try to find the best `category_id` from the available categories based on the transaction content or merchant.
-        - If the merchant name in the document is similar to one of the "merchants" in the context, use its `name` and `default_category_id`.
-        - If the transaction matches an existing transaction, use its `category_id`.
-        - If you recognize a merchant but it's not in the context, suggest a likely category name.
-        
-        Available Actions:
-        1. QUERY: If you need more information about a specific transaction or merchant.
-           Example: {{"action": "QUERY", "params": {{"merchant": "Amazon", "amount": 25.00}}}}
-        2. DECIDE: Make a final proposal for the document. You can return multiple proposals.
-           Decision Options for each item: 
-           - "CREATE_NEW": No matching transaction found.
-           - "UPDATE_EXISTING": Match found. Provide `target_transaction_id`.
-           - "CREATE_ACCOUNT": If one or more transactions belong to a NEW account. Provide `new_account_data` and the list of `transactions`.
-
-           Return format for DECIDE:
-           {{
-             "action": "DECIDE",
-             "proposals": [
-               {{
-                 "type": "CREATE_NEW",
-                 "data": {{...}},
-                 "confidence": 0.9
-               }},
-               {{
-                 "type": "CREATE_ACCOUNT",
-                 "new_account_data": {{"name": "...", "type": "...", "sub_type": "...", "description": "..."}},
-                 "transactions": [{{...}}, {{...}}],
-                 "confidence": 0.95
-               }}
-             ]
-           }}
-
-        Return ONLY a JSON object.
-        """
-
-        await gemini_limiter.wait()
-        response = await client.aio.models.generate_content(
-            model=settings.GOOGLE_GENAI_MODEL,
-            contents=[prompt],
-            config=types.GenerateContentConfig(
-                response_mime_type='application/json',
-            )
-        )
-
-        if not response.text:
-            break
-
-        try:
-            res = json.loads(response.text)
-        except json.JSONDecodeError:
-            break
-
-        if res.get("action") == "QUERY":
-            query_count += 1
-            params = res.get("params", {})
-            search_results = await search_transactions_logic(db, user_id, params)
-            history.append({
-                "query": params,
-                "results": search_results
-            })
-            continue
-        elif res.get("action") == "DECIDE":
-            proposals = res.get("proposals", [])
-            for p in proposals:
-                p_type = p.get("type")
-                p_data = p.get("data")
-                p_confidence = p.get("confidence", 0.7)
-                
-                if p_type == "CREATE_ACCOUNT":
-                    batch_data = {
-                        "_new_account": p.get("new_account_data"),
-                        "transactions": p.get("transactions")
-                    }
-                    await apply_proposal(batch_data, doc, db, "CREATE_ACCOUNT", None, p_confidence)
-                elif p_type == "UPDATE_EXISTING":
-                    await apply_proposal(p_data, doc, db, "UPDATE_EXISTING", p.get("target_transaction_id"), p_confidence)
-                else:
-                    await apply_proposal(p_data, doc, db, "CREATE_NEW", None, p_confidence)
-            return
-        else:
-            break
-
-    # Fallback if AI fails: process each item with fallback logic
-    for item in extracted_data:
-        await fallback_matching_logic(item, doc, db)
-
-async def create_or_update_proposal(data: dict, doc: Document, db: AsyncSession):
-    # This is now kept for backward compatibility or individual fallbacks, 
-    # but the logic is mostly moved to create_proposals_for_extracted_data.
-    await fallback_matching_logic(data, doc, db)
 
 async def get_agent_context(db: AsyncSession, user_id: str, relevant_merchants: Optional[List[str]] = None):
     # Last transactions
