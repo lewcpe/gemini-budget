@@ -82,4 +82,4 @@ PYTHONPATH=. ./venv/bin/pytest backend/tests --cov=backend
 
 ## 📄 License
 
-This project is licensed under the MIT License.
+This project is licensed under a Proprietary License. See the [LICENSE](LICENSE) file for details.
