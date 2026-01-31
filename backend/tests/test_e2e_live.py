@@ -59,7 +59,7 @@ async def test_receipt_matching(db_session, mock_session_local):
 
     # 1. Setup Data
     email = f"receipt_{os.urandom(4).hex()}@example.com"
-    user = User(email=email, hashed_password="pw")
+    user = User(email=email)
     db_session.add(user)
     await db_session.commit()
     await db_session.refresh(user)
@@ -153,7 +153,7 @@ async def test_new_account_creation_from_statement(db_session, mock_session_loca
 
     # 1. Setup Data
     email = f"bank_{os.urandom(4).hex()}@example.com"
-    user = User(email=email, hashed_password="pw")
+    user = User(email=email)
     db_session.add(user)
     await db_session.commit()
     await db_session.refresh(user)
@@ -236,7 +236,7 @@ async def test_credit_card_statement_import(db_session, mock_session_local):
 
     # 1. Setup Data
     email = f"cc_{os.urandom(4).hex()}@example.com"
-    user = User(email=email, hashed_password="pw")
+    user = User(email=email)
     db_session.add(user)
     await db_session.commit()
     await db_session.refresh(user)
