@@ -22,7 +22,7 @@ def create_text_image(text):
     y = 20
     for line in text.split('\n'):
         d.text((20, y), line, fill="black")
-        y += 15 # Simple line height
+        y += 25 # Increased line height for better legibility
 
     # Save to bytes
     b = io.BytesIO()

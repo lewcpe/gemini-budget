@@ -9,10 +9,10 @@ from google import genai
 from google.genai import types
 from sqlalchemy.future import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import desc, or_, delete
 from ..models import Document, Transaction, ProposedChange, Account, Category, Merchant
 from ..config import settings
 from ..database import SessionLocal
-from sqlalchemy import desc, or_
 import json
 import asyncio
 import time
@@ -56,6 +56,10 @@ async def process_document_task(document_id: str):
         await db.commit()
 
         try:
+            # Clear any existing proposals for this document (e.g. from retries)
+            await db.execute(delete(ProposedChange).where(ProposedChange.document_id == document_id))
+            await db.commit()
+
             # 1. Prepare images
             images = []
             file_path = Path(doc.file_path)
@@ -102,8 +106,9 @@ async def process_document_task(document_id: str):
                 {json.dumps(history, indent=2)}
 
                 CRITICAL RULES:
-                1. Every transaction MUST have an `account_id` if it is a `CREATE_NEW` or `UPDATE_EXISTING`.
-                2. If the document clearly belongs to a specific account (e.g., a credit card statement) that is NOT in the context, propose `CREATE_ACCOUNT`.
+                1. EXTRACT ALL TRANSACTIONS: You must extract every single transaction listed in the document. Do not skip any line items. Do not summarize or group them unless they are identical.
+                2. Every transaction MUST have an `account_id` if it is a `CREATE_NEW` or `UPDATE_EXISTING`.
+                3. If the document clearly belongs to a specific account (e.g., a credit card statement) that is NOT in the context, propose `CREATE_ACCOUNT`.
                 3. If you cannot find a matching account in the context or suggestions, use the ID of the "Petty Cash Account".
                 4. CATEGORY MATCHING: Use the provided categories. If you're unsure, suggest a likely category name.
                 5. ACCOUNT TYPES: When proposing `CREATE_ACCOUNT`, the `type` MUST be exactly 'ASSET' or 'LIABILITY'. Use `sub_type` for specific details (e.g., 'BANK', 'CREDIT_CARD', 'CASH', 'INVESTMENT').
@@ -431,13 +436,15 @@ async def apply_proposal(data: dict, doc: Document, db: AsyncSession, change_typ
                 acc_data["sub_type"] = acc_type
             acc_data["type"] = "ASSET"
 
-    # Check for existing proposal for this document and target
-    query_p = select(ProposedChange).where(
-        ProposedChange.document_id == doc.id,
-        ProposedChange.target_transaction_id == target_id
-    )
-    result_p = await db.execute(query_p)
-    existing_p = result_p.scalars().first()
+    # Check for existing proposal for this document and target (only if target_id is set)
+    existing_p = None
+    if target_id is not None:
+        query_p = select(ProposedChange).where(
+            ProposedChange.document_id == doc.id,
+            ProposedChange.target_transaction_id == target_id
+        )
+        result_p = await db.execute(query_p)
+        existing_p = result_p.scalars().first()
     
     if existing_p:
         existing_p.proposed_data = data
