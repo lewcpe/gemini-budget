@@ -80,6 +80,7 @@ async def process_document_task(document_id: str):
                 return
 
             # 2. Unified Agentic Loop
+            print(f"Starting processing for document {document_id}")
             client = genai.Client(api_key=settings.GOOGLE_GENAI_KEY)
             user_id = doc.user_id
             
@@ -91,6 +92,7 @@ async def process_document_task(document_id: str):
             history = []
 
             while query_count < limit:
+                print(f"Agentic Loop: Query {query_count + 1}/{limit}")
                 prompt = f"""
                 You are an intelligent accounting assistant. Your goal is to extract all transactions from the following document images
                 and decide whether they match existing ones, should be created individually, or part of a batch.
@@ -105,7 +107,7 @@ async def process_document_task(document_id: str):
                 1. Every transaction MUST have an `account_id` if it is a `CREATE_NEW` or `UPDATE_EXISTING`.
                 2. If the document clearly belongs to a specific account (e.g., a credit card statement) that is NOT in the context, propose `CREATE_ACCOUNT`.
                 3. If you cannot find a matching account in the context or suggestions, use the ID of the "Petty Cash Account".
-                4. CATEGORY MATCHING: Use the provided categories. If you're unsure, suggest a likely category name.
+                4. CATEGORY MATCHING: You MUST use the `id` field from the provided categories list. DO NOT use the category name as an ID. If you cannot find a matching category, use the ID of the category most likely to fit.
                 5. ACCOUNT TYPES: When proposing `CREATE_ACCOUNT`, the `type` MUST be exactly 'ASSET' or 'LIABILITY'. Use `sub_type` for specific details (e.g., 'BANK', 'CREDIT_CARD', 'CASH', 'INVESTMENT').
                 
                 Available Actions:
@@ -161,14 +163,19 @@ async def process_document_task(document_id: str):
                 for img in images:
                     contents.append(img)
 
+                print(f"Sending request to Gemini (Model: {settings.GOOGLE_GENAI_MODEL})...")
                 await gemini_limiter.wait()
                 response = await client.aio.models.generate_content(
                     model=settings.GOOGLE_GENAI_MODEL,
                     contents=contents,
                     config=types.GenerateContentConfig(
+                        thinking_config=types.ThinkingConfig(
+                            thinking_level="MINIMAL",
+                        ),
                         response_mime_type='application/json',
                     )
                 )
+                print("Response received from Gemini.")
 
                 if not response.text or not response.text.strip():
                     break
@@ -181,6 +188,7 @@ async def process_document_task(document_id: str):
                 if res.get("action") == "QUERY":
                     query_count += 1
                     params = res.get("params", {})
+                    print(f"Action: QUERY - {params}")
                     search_results = await search_transactions_logic(db, user_id, params)
                     history.append({
                         "query": params,
@@ -189,6 +197,7 @@ async def process_document_task(document_id: str):
                     continue
                 elif res.get("action") == "DECIDE":
                     proposals = res.get("proposals", [])
+                    print(f"Action: DECIDE - {len(proposals)} proposals")
                     validation_errors = []
                     
                     # Extract valid IDs from context
@@ -207,18 +216,19 @@ async def process_document_task(document_id: str):
                                 if tx.get("type") not in valid_transaction_types:
                                     validation_errors.append(f"Invalid transaction type '{tx.get('type')}'. MUST be 'INCOME', 'EXPENSE', or 'TRANSFER'.")
                                 if tx.get("category_id") and tx.get("category_id") not in valid_category_ids:
-                                    validation_errors.append(f"Invalid category_id '{tx.get('category_id')}' for transaction with merchant '{tx.get('merchant')}'. This ID does not exist in your context. Use a valid ID from the provided categories list.")
+                                    validation_errors.append(f"Invalid category_id '{tx.get('category_id')}' for transaction with merchant '{tx.get('merchant')}'. This ID does not exist in your context. You MUST use one of the IDs from the categories list: {list(valid_category_ids)}. Do NOT use the category name.")
                         
                         elif p_type in ["CREATE_NEW", "UPDATE_EXISTING"]:
                             p_data = p.get("data", {})
                             if p_data.get("account_id") and p_data.get("account_id") not in valid_account_ids:
-                                validation_errors.append(f"Invalid account_id '{p_data.get('account_id')}'. This ID does not exist. Use a valid ID from the provided accounts list.")
+                                validation_errors.append(f"Invalid account_id '{p_data.get('account_id')}'. This ID does not exist. Use a valid ID from the provided accounts list: {list(valid_account_ids)}.")
                             if p_data.get("category_id") and p_data.get("category_id") not in valid_category_ids:
-                                validation_errors.append(f"Invalid category_id '{p_data.get('category_id')}' for merchant '{p_data.get('merchant')}'. This ID does not exist. Use a valid ID from the provided categories list.")
+                                validation_errors.append(f"Invalid category_id '{p_data.get('category_id')}' for merchant '{p_data.get('merchant')}'. This ID does not exist. You MUST use one of the IDs from the categories list: {list(valid_category_ids)}. Do NOT use the category name.")
                             if p_data.get("type") and p_data.get("type") not in valid_transaction_types:
                                 validation_errors.append(f"Invalid transaction type '{p_data.get('type')}'. MUST be 'INCOME', 'EXPENSE', or 'TRANSFER'.")
 
                     if validation_errors:
+                        print(f"Validation Errors: {validation_errors}")
                         query_count += 1
                         history.append({
                             "decision": res,

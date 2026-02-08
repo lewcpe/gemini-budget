@@ -80,6 +80,16 @@ Ensure your virtual environment is active and run:
 PYTHONPATH=. ./venv/bin/pytest backend/tests --cov=backend
 ```
 
+### 🌍 Running Real-World Tests
+
+To run the real-world tests that use actual image fixtures and the Gemini API:
+
+```bash
+GOOGLE_GENAI_KEY=your_api_key_here PYTHONPATH=. ./venv/bin/pytest backend/tests/test_real_fixtures.py -s
+```
+
+Note: The `-s` flag allows you to see the output of the extraction results for each fixture.
+
 ## 📄 License
 
 This project is licensed under a Proprietary License. See the [LICENSE](LICENSE) file for details.
