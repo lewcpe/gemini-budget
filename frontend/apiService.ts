@@ -40,7 +40,7 @@ const fetcher = async (path: string, options: RequestInit = {}) => {
     ...options,
     headers,
     mode: 'cors',
-    credentials: 'omit',
+    credentials: 'include',
   };
 
   try {
