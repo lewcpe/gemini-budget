@@ -333,9 +333,9 @@ async def search_transactions_logic(db: AsyncSession, user_id: str, params: dict
     if "amount" in params:
         query = query.where(Transaction.amount == float(params['amount']))
     if "start_date" in params:
-        query = query.where(Transaction.transaction_date >= datetime.fromisoformat(params['start_date']))
+        query = query.where(Transaction.transaction_date >= datetime.fromisoformat(params['start_date'].replace('Z', '+00:00')))
     if "end_date" in params:
-        query = query.where(Transaction.transaction_date <= datetime.fromisoformat(params['end_date']))
+        query = query.where(Transaction.transaction_date <= datetime.fromisoformat(params['end_date'].replace('Z', '+00:00')))
         
     res = await db.execute(query.limit(20))
     transactions = res.scalars().all()
@@ -472,7 +472,7 @@ async def fallback_matching_logic(data: dict, doc: Document, db: AsyncSession):
     date_str = data.get("transaction_date", "")
     
     try:
-        t_date = datetime.fromisoformat(date_str).replace(tzinfo=timezone.utc)
+        t_date = datetime.fromisoformat(date_str.replace('Z', '+00:00')).replace(tzinfo=timezone.utc)
     except:
         t_date = datetime.now(timezone.utc)
 

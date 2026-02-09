@@ -120,8 +120,17 @@ async def confirm_proposal(
             old_account_id = tx.account_id
             old_target_account_id = tx.target_account_id
             
+            # Fields that should NOT be updated manually from proposal data
+            excluded_fields = {"id", "user_id", "created_at", "updated_at"}
+            
             for key, value in data.items():
-                if hasattr(tx, key) and key != "id":
+                if hasattr(tx, key) and key not in excluded_fields:
+                    if key == "transaction_date" and isinstance(value, str):
+                        try:
+                            value = datetime.fromisoformat(value.replace('Z', '+00:00'))
+                        except ValueError:
+                            # Fallback if fromisoformat fails
+                            continue
                     setattr(tx, key, value)
             
             await db.flush()
@@ -152,7 +161,7 @@ async def _create_transaction_from_data(data: dict, user_id: str, proposal_id: s
         amount=data.get("amount"),
         type=data.get("type"),
         transaction_date=(
-            datetime.fromisoformat(data["transaction_date"])
+            datetime.fromisoformat(data["transaction_date"].replace('Z', '+00:00'))
             if isinstance(data.get("transaction_date"), str)
             else (data.get("transaction_date") or datetime.now(timezone.utc))
         ),
