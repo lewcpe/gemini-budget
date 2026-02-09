@@ -74,17 +74,17 @@ async def get_wealth_chart(
         # the first period_key is the current one, and temp_balances are already
         # at the "end of current period" state.
         
-        assets = sum(temp_balances[aid] for aid, a in account_map.items() if a.type == "ASSET")
-        liab_sum = sum(temp_balances[aid] for aid, a in account_map.items() if a.type == "LIABILITY")
+        # Robust calculation:
+        # Assets are positive balances, Liabilities (absolute) are negative balances.
+        # This handles overdrawn asset accounts and positive-balance liability accounts (credits).
+        assets = sum(bal for bal in temp_balances.values() if bal > 0)
+        liab_debt_sum = sum(bal for bal in temp_balances.values() if bal < 0)
         
-        # Conventionally, we show debt (negative balance in a LIABILITY account) 
-        # as a positive liability amount on a report.
-        report_liabilities = -liab_sum
+        # Display liabilities as a positive number
+        report_liabilities = abs(liab_debt_sum)
         
-        # Net worth is the actual sum of all account balances.
-        # Net Worth = Assets (signed) + Liabilities (signed)
-        # Which is also Assets (signed) - Liabilities_Amount_Owed (positive).
-        net_worth = assets + liab_sum
+        # Net worth is the algebraic sum of all balances
+        net_worth = sum(temp_balances.values())
         
         # Determine display date
         display_date = period_key

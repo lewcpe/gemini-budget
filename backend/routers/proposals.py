@@ -156,7 +156,7 @@ async def _create_transaction_from_data(data: dict, user_id: str, proposal_id: s
             if isinstance(data.get("transaction_date"), str)
             else (data.get("transaction_date") or datetime.now(timezone.utc))
         ),
-        note=data.get("note"),
+        note=data.get("note") or data.get("description"),
         merchant=data.get("merchant")
     )
     

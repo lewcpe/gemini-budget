@@ -1,0 +1,5 @@
+{
+  "name": "Gemini Budget",
+  "description": "A modern personal accounting application that automates expense tracking using AI. It leverages Gemini to extract data from receipts and provides intelligent transaction matching and wealth reporting.",
+  "requestFramePermissions": []
+}
