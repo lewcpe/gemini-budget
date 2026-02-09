@@ -90,21 +90,78 @@ async def confirm_proposal(
             if not acc_id:
                 raise HTTPException(status_code=400, detail="Missing target account or account metadata")
             
-            # 2. Create transactions
-            transactions = data.get("transactions")
-            if not transactions:
+            # 2. Check for balance sync data (Opening/Closing balances)
+            opening_bal = float(data.get("opening_balance") or data.get("_new_account", {}).get("opening_balance", 0.0))
+            closing_bal = data.get("closing_balance") or data.get("_new_account", {}).get("closing_balance")
+            if closing_bal is not None:
+                closing_bal = float(closing_bal)
+
+            # 3. Create transactions
+            transactions = data.get("transactions", [])
+            if not transactions and ("_new_account" not in data and "opening_balance" not in data):
                 # If AI returned it as a single data object instead of a list (fallback)
                 transactions = [data]
             
+            # Find earliest date for Opening Balance
+            earliest_date = datetime.now(timezone.utc)
+            for tx_item in transactions:
+                try:
+                    d_str = tx_item.get("transaction_date")
+                    if isinstance(d_str, str):
+                        tx_date = datetime.fromisoformat(d_str.replace('Z', '+00:00'))
+                        if tx_date < earliest_date:
+                            earliest_date = tx_date
+                except:
+                    continue
+
+            # Add Opening Balance if non-zero
+            if opening_bal != 0:
+                ob_tx = Transaction(
+                    user_id=current_user.id,
+                    account_id=acc_id,
+                    amount=abs(opening_bal),
+                    type="INCOME" if opening_bal > 0 else "EXPENSE",
+                    transaction_date=earliest_date,
+                    merchant="Opening Balance",
+                    note="Initial balance from document"
+                )
+                db.add(ob_tx)
+                await db.flush()
+
             for tx_item in transactions:
                 # Ensure the transaction uses the decided account_id
                 tx_item["account_id"] = acc_id
                 new_tx = await _create_transaction_from_data(tx_item, current_user.id, proposal_id, db)
                 db.add(new_tx)
                 await db.flush()
-                await recalculate_account_balance(db, acc_id)
-                if new_tx.target_account_id:
-                    await recalculate_account_balance(db, new_tx.target_account_id)
+
+            # 4. Final balance sync
+            await recalculate_account_balance(db, acc_id)
+            if closing_bal is not None:
+                # Fetch fresh account state
+                res_acc = await db.execute(select(Account).where(Account.id == acc_id))
+                updated_acc = res_acc.scalars().first()
+                if updated_acc:
+                    diff = closing_bal - updated_acc.current_balance
+                    if abs(diff) > 0.001:
+                        adj_tx = Transaction(
+                            user_id=current_user.id,
+                            account_id=acc_id,
+                            amount=abs(diff),
+                            type="INCOME" if diff > 0 else "EXPENSE",
+                            transaction_date=datetime.now(timezone.utc),
+                            merchant="Balance Adjustment",
+                            note=f"Adjustment to match document closing balance ({closing_bal})"
+                        )
+                        db.add(adj_tx)
+                        await db.flush()
+                        await recalculate_account_balance(db, acc_id)
+
+            # Recalculate any target accounts (transfers)
+            tx_results = await db.execute(select(Transaction).where(Transaction.user_id == current_user.id, Transaction.account_id == acc_id))
+            for tx in tx_results.scalars().all():
+                if tx.target_account_id:
+                    await recalculate_account_balance(db, tx.target_account_id)
 
         elif db_proposal.change_type == "UPDATE_EXISTING":
             if not db_proposal.target_transaction_id:
