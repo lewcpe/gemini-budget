@@ -73,6 +73,36 @@ uvicorn backend.main:app --reload
 ```
 The API will be available at `http://127.0.0.1:8000`. You can explore the interactive documentation at `http://127.0.0.1:8000/docs`.
 
+## 🐳 Docker Deployment
+
+You can also run the application using Docker.
+
+### 1. `compose.yml` Example
+
+Create a `compose.yml` file in the root directory:
+
+```yaml
+services:
+  backend:
+    build: .
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./backend/uploads:/app/backend/uploads
+      - ./data:/app/data
+    env_file:
+      - .env
+    environment:
+      - DATABASE_URL=sqlite+aiosqlite:///app/data/gemini_budget.db
+    restart: always
+```
+
+### 2. Run with Docker Compose
+
+```bash
+docker compose up -d --build
+```
+
 ## 🧪 Running Tests
 
 Ensure your virtual environment is active and run:

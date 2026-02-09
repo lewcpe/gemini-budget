@@ -170,7 +170,7 @@ async def process_document_task(document_id: str):
                     contents=contents,
                     config=types.GenerateContentConfig(
                         thinking_config=types.ThinkingConfig(
-                            thinking_level="MINIMAL",
+                            thinking_level=types.ThinkingLevel.MINIMAL,
                         ),
                         response_mime_type='application/json',
                     )
