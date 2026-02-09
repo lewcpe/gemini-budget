@@ -109,6 +109,7 @@ async def process_document_task(document_id: str):
                 3. If you cannot find a matching account in the context or suggestions, use the ID of the "Petty Cash Account".
                 4. CATEGORY MATCHING: You MUST use the `id` field from the provided categories list. DO NOT use the category name as an ID. If you cannot find a matching category, use the ID of the category most likely to fit.
                 5. ACCOUNT TYPES: When proposing `CREATE_ACCOUNT`, the `type` MUST be exactly 'ASSET' or 'LIABILITY'. Use `sub_type` for specific details (e.g., 'BANK', 'CREDIT_CARD', 'CASH', 'INVESTMENT').
+                6. BALANCES: For any document that looks like a statement (e.g., Bank, Credit Card, or Utility Statement), you MUST extract `opening_balance` and `closing_balance`. Include these at the top level of your `DECIDE` proposal data or inside `new_account_data`. This is CRITICAL for ledger reconciliation.
                 
                 Available Actions:
                 1. QUERY: If you need to search for more transactions to confirm a match.
@@ -141,7 +142,9 @@ async def process_document_task(document_id: str):
                             "name": "Human-readable name", 
                             "type": "MANDATORY: MUST BE EITHER 'ASSET' OR 'LIABILITY'", 
                             "sub_type": "Optional: e.g., 'BANK', 'SAVINGS', 'CREDIT_CARD', 'CASH'", 
-                            "description": "..."
+                            "description": "...",
+                            "opening_balance": 1500.25,
+                            "closing_balance": 1200.50
                          }},
                          "transactions": [{{
                             "amount": 1000.0,
