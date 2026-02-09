@@ -8,3 +8,7 @@ __pycache__/
 .coverage
 htmlcov/
 gemini_budget.db
+frontend/node_modules/
+backend/uploads/
+dist/
+build/

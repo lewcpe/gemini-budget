@@ -10,7 +10,7 @@ const STORAGE_KEYS = {
   USER_EMAIL: 'gemini_budget_user_email'
 };
 
-const DEFAULT_API_URL = 'http://localhost:8000';
+const DEFAULT_API_URL = import.meta.env.DEV ? 'http://localhost:8000' : window.location.origin;
 
 export const getApiSettings = () => {
   return {
